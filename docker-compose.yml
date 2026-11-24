@@ -1,0 +1,53 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-govbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-govbot_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-jamaica_govbot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U govbot -d jamaica_govbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: vps
+      DATABASE_URL: postgresql://${POSTGRES_USER:-govbot}:${POSTGRES_PASSWORD:-govbot_secret}@db:5432/${POSTGRES_DB:-jamaica_govbot}
+      DATA_DIR: /app/data
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-vps-env}
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8010:8010"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8010
+    ports:
+      - "3010:3010"
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  pgdata:
+  ollama_data:

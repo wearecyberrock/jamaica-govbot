@@ -1,0 +1,21 @@
+theme_id,sample_question,category,policy_or_profile_specific
+purpose_of_trip,What is the purpose of your visit?,travel_or_other,profile_or_standard
+employment,What do you do for work?,employment,profile_or_standard
+monthly_income,How much do you earn each month?,employment,profile_or_standard
+marital_status,Are you married?,family_or_identity,profile_or_standard
+children,Do you have children?,family_or_identity,profile_or_standard
+destination,Where are you going in the United States?,travel_or_other,profile_or_standard
+us_contact,Who are you visiting in the United States?,family_or_identity,profile_or_standard
+us_relatives,Do you have other relatives in the United States?,family_or_identity,profile_or_standard
+home_country_safety,Do you feel safe returning to Jamaica / have you experienced harm?,travel_or_other,policy_question
+h2b_history,What work did you perform during your H-2B stay?,immigration_history,profile_or_standard
+unfinished_us_studies,Why did you not finish your U.S. studies?,immigration_history,profile_or_standard
+first_time_application,Is this your first U.S. visa application?,immigration_history,profile_or_standard
+spouse_employment,Where does your spouse work?,family_or_identity,profile_or_standard
+prior_refusal,Have you previously been refused a U.S. visa?,immigration_history,profile_or_standard
+business_income,How much do you personally earn from your business?,employment,profile_or_standard
+travel_history,Where have you travelled previously?,travel_or_other,profile_or_standard
+us_partner,Who is your U.S.-based partner?,travel_or_other,profile_or_standard
+marriage_plans,Are you planning to marry or live in the United States?,travel_or_other,profile_or_standard
+us_parent_status,What is your U.S. parent’s immigration status?,immigration_history,profile_or_standard
+funding,Who is paying for your studies or trip?,travel_or_other,profile_or_standard

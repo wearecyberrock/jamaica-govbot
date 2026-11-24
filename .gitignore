@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Next.js / Electron
+node_modules/
+frontend/.next/
+frontend/out/
+desktop/dist/
+desktop/release/
+
+# Local runtime DB & secrets (keep seeded official_pdfs, seed_package, jahtaria-logo.png!)
+.env
+data/jamaica_govbot.db
+data/jamaica_govbot.db-*
+data/generated/*
+!data/generated/.gitkeep
+data/.secret_key
+*.log
+.DS_Store

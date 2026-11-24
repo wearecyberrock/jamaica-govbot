@@ -1,0 +1,71 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ja-green: #1a472a;
+  --ja-green-dark: #13331e;
+  --ja-green-light: #eef7f2;
+  --ja-gold: #d4a234;
+  --ja-gold-bright: #ffd700;
+  --ja-navy: #0b3c68;
+  --ja-sunset: #f28c18;
+  --ja-red: #ce1126;
+}
+
+body {
+  font-family: "Plus Jakarta Sans", "Inter", system-ui, -apple-system, sans-serif;
+  background: radial-gradient(circle at top right, rgba(255, 215, 0, 0.08), transparent 34%),
+    radial-gradient(circle at top left, rgba(26, 71, 42, 0.08), transparent 36%),
+    linear-gradient(180deg, #f6faf8 0%, #eef5f1 50%, #f4f7fb 100%);
+  color: #0f172a;
+  min-height: 100vh;
+}
+
+.ja-tricolor-bar {
+  height: 5px;
+  width: 100%;
+  background: linear-gradient(90deg, var(--ja-green) 0%, var(--ja-gold-bright) 50%, var(--ja-navy) 100%);
+}
+
+.ja-card {
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+.ja-btn-primary {
+  background-color: var(--ja-green);
+  color: #ffd700;
+  border: 1.5px solid #ffd700;
+  border-radius: 10px;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.ja-btn-primary:hover {
+  background-color: var(--ja-green-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(26, 71, 42, 0.25);
+}
+
+.ja-input {
+  width: 100%;
+  background: #ffffff;
+  border: 1.5px solid rgba(15, 23, 42, 0.14);
+  border-radius: 10px;
+  padding: 0.65rem 0.9rem;
+  font-size: 0.9rem;
+  color: #0f172a;
+  transition: all 0.2s ease;
+}
+
+.ja-input:focus {
+  outline: none;
+  border-color: var(--ja-green);
+  box-shadow: 0 0 0 3px rgba(26, 71, 42, 0.12);
+}
