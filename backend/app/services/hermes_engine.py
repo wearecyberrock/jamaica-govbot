@@ -523,6 +523,8 @@ def call_llm_detailed(
             }
 
     # 3. Antigravity CLI (Windows agy.exe/agy.cmd + Unix) or Google OAuth Token Endpoint
+    # Note: In `auto` mode, only invoke local `agy.exe` CLI if explicitly selected or OAuth token saved
+    # (prevents slow 20s CLI spawns ahead of fast HTTP API keys and keeps pytest hermetic).
     agy_tok = _get_antigravity_oauth_token(db)
     agy_bin = find_antigravity_bin()
     if provider == "antigravity" or (provider == "auto" and bool(agy_tok)):
@@ -532,7 +534,11 @@ def call_llm_detailed(
 
         # 3a. Try local Antigravity CLI (`agy.exe` / `agy.cmd` / `agy`)
         if agy_bin:
-            agy_model = model if (model and any(k in model for k in ("gemini-", "claude-", "gpt-oss", "orchestrator"))) else "gemini-3.8-flash-medium"
+            agy_model = (
+                model
+                if (model and model not in ("auto-flagship", "consular-auto") and any(k in model for k in ("gemini-", "claude-", "gpt-oss", "orchestrator")))
+                else "gemini-4-neon-medium"
+            )
             history_block = ""
             if clean_history:
                 transcript = "\n".join(
@@ -721,17 +727,21 @@ def call_llm_detailed(
                 "configured_providers": [],
             }
 
-    # 7. Google Gemini API Key (with automatic 503/429 high-demand retry & backup Gemini model failover)
+    # 7. Google Gemini API Key (with automatic 503/429 high-demand retry & flagship backup failover)
     if provider in ("auto", "gemini"):
         gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", "")).strip()
         if gem_key:
             configured_providers.append("gemini")
-            gem_model = model.replace("gemini/", "") if "gemini" in model else "gemini-3.1-flash-lite"
+            gem_model = (
+                model.replace("gemini/", "")
+                if (model and model not in ("auto-flagship", "consular-auto") and ("gemini" in model or "antigravity" in model))
+                else "gemini-4-neon"
+            )
             if gem_model in ("gemini-2.0-flash", "gemini-2.5-flash"):
-                gem_model = "gemini-3.1-flash-lite"
-            # Build ordered candidate list: requested model first, then resilient fallbacks on 503/429
+                gem_model = "gemini-4-neon"
+            # Build ordered candidate list: requested model first, then resilient flagship & fast fallbacks on 503/429
             candidates: list[str] = []
-            for m_cand in (gem_model, "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-latest"):
+            for m_cand in (gem_model, "gemini-4-neon", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"):
                 if m_cand not in candidates:
                     candidates.append(m_cand)
             last_gem_err = ""

@@ -1873,6 +1873,8 @@ function SettingsSubPanel({
   const [agyCodeInput, setAgyCodeInput] = useState("");
   const [claudeTok, setClaudeTok] = useState("");
   const [showClaudeBox, setShowClaudeBox] = useState(false);
+  const [customModelId, setCustomModelId] = useState("");
+  const [refreshingModels, setRefreshingModels] = useState(false);
 
   // API key & ClawLink / Composio quick save
   const [apiProv, setApiProv] = useState("gemini");
@@ -2268,10 +2270,32 @@ function SettingsSubPanel({
         }}
         className="g-card p-3.5 space-y-2.5"
       >
-        <div className="text-xs font-bold text-white">5. Cloud API Keys &amp; Local Ollama (or paste key directly in chat!)</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-bold text-white">5. Cloud API Keys, Local Ollama &amp; Live Models</div>
+          <button
+            type="button"
+            disabled={refreshingModels}
+            onClick={async () => {
+              setRefreshingModels(true);
+              try {
+                await apiFetch("/api/models/refresh", { method: "POST" });
+                await loadAll();
+                setStatus("Refreshed live flagship models from all connected providers!");
+              } finally {
+                setRefreshingModels(false);
+              }
+            }}
+            className="text-[11px] text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${refreshingModels ? "animate-spin" : ""}`} />
+            {refreshingModels ? "Refreshing…" : "Refresh Live Models"}
+          </button>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-[145px_1fr_auto] gap-2">
           <select className="g-input text-xs" value={apiProv} onChange={(e) => setApiProv(e.target.value)}>
             <option value="gemini">Google Gemini</option>
+            <option value="antigravity">Antigravity</option>
+            <option value="openai-codex">ChatGPT / Codex</option>
             <option value="openai">OpenAI API</option>
             <option value="anthropic">Anthropic API</option>
             <option value="xai_grok">xAI Grok</option>
@@ -2281,9 +2305,33 @@ function SettingsSubPanel({
           {apiProv === "ollama" ? (
             <input className="g-input text-xs min-w-0" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" />
           ) : (
-            <input className="g-input text-xs min-w-0" type="password" value={apiKeyVal} onChange={(e) => setApiKeyVal(e.target.value)} placeholder="Paste encrypted API key..." />
+            <input className="g-input text-xs min-w-0" type="password" value={apiKeyVal} onChange={(e) => setApiKeyVal(e.target.value)} placeholder="Paste encrypted API key (or leave blank)..." />
           )}
           <button type="submit" className="g-btn-primary px-3.5 text-xs shrink-0">Save</button>
+        </div>
+        <div className="flex items-center gap-2 pt-1 border-t border-white/10">
+          <input
+            className="g-input text-xs flex-1 min-w-0"
+            value={customModelId}
+            onChange={(e) => setCustomModelId(e.target.value)}
+            placeholder="Custom Model ID (e.g. gemini-4-neon, gpt-5.4, claude-opus-5-5)..."
+          />
+          <button
+            type="button"
+            disabled={!customModelId.trim()}
+            onClick={async () => {
+              await apiFetch("/api/models/select", {
+                method: "POST",
+                body: JSON.stringify({ provider: apiProv, model: customModelId.trim() }),
+              });
+              setStatus(`Activated custom model ${apiProv} · ${customModelId.trim()}!`);
+              setCustomModelId("");
+              loadAll();
+            }}
+            className="g-btn-ghost px-3 py-1.5 text-[11px] text-[#e5b84b] shrink-0 disabled:opacity-40"
+          >
+            Use Model
+          </button>
         </div>
       </form>
 

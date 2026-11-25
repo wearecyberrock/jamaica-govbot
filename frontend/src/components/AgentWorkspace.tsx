@@ -1593,14 +1593,15 @@ function PromptPill({
                     {g.items.map((item: any) =>
                       item.models.map((m: string) => (
                         <option key={`${item.provider}::${m}`} value={`${item.provider}::${m}`} className="bg-[#171a21] text-slate-100">
-                          {item.connected ? "● " : "○ "}
-                          {item.label.split(" ")[0]} · {m}
+                          {item.provider === "auto"
+                            ? "★ Auto · Best Flagship"
+                            : `${item.connected ? "● " : "○ "}${item.label.split(" ")[0]} · ${m}`}
                         </option>
                       ))
                     )}
                   </optgroup>
                 ))}
-                {!modelCatalog && <option value="auto::consular-auto">● Consular Auto</option>}
+                {!modelCatalog && <option value="auto::auto-flagship">★ Auto · Best Flagship</option>}
               </select>
             );
           })()}

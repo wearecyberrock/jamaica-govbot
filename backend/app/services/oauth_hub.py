@@ -400,13 +400,241 @@ def import_local_subscription_tokens(db: Session) -> dict[str, Any]:
     return {"imported": imported, "count": len(imported)}
 
 
-# ── 4. Grouped Model Picker Catalog (No "Hermes" Mentioned Anywhere!) ────────
+# ── 4. Live Auto-Discovery & Flagship-First Grouped Model Picker ─────────────
+
+_MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
+_MODEL_CACHE_TTL_SEC = 300.0
+
+
+def clear_model_catalog_cache() -> None:
+    _MODEL_CACHE.clear()
+
+
+def _cache_get(key: str) -> list[str] | None:
+    entry = _MODEL_CACHE.get(key)
+    if entry and (time.time() - entry[0]) < _MODEL_CACHE_TTL_SEC:
+        return list(entry[1])
+    return None
+
+
+def _cache_set(key: str, models: list[str]) -> list[str]:
+    _MODEL_CACHE[key] = (time.time(), list(models))
+    return list(models)
+
+
+def _rank_models_flagship_first(models: list[str], priority_prefixes: list[str]) -> list[str]:
+    """Deduplicate and sort models with flagship models strictly on top."""
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for m in models:
+        clean = (m or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            uniq.append(clean)
+
+    def score(m: str) -> tuple[int, str]:
+        low = m.lower()
+        for idx, pref in enumerate(priority_prefixes):
+            if low == pref or low.startswith(pref):
+                return (idx, low)
+        return (len(priority_prefixes) + 10, low)
+
+    return sorted(uniq, key=score)
+
+
+def _discover_agy_models(agy_bin: str) -> list[str]:
+    cached = _cache_get("agy")
+    if cached is not None:
+        return cached
+    import subprocess
+
+    fallback = [
+        "gemini-4-neon-high",
+        "gemini-4-neon-xhigh",
+        "gemini-4-neon-medium",
+        "gemini-4-hydrogen-high",
+        "gemini-4-carbon-high",
+        "gemini-4-argon-high",
+        "claude-opus-5-5-high",
+        "claude-sonnet-5-5-high",
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gpt-oss-120b-medium",
+    ]
+    if not agy_bin:
+        return fallback
+    try:
+        kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": 8, "encoding": "utf-8", "errors": "replace"}
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        proc = subprocess.run([agy_bin, "models"], **kwargs)
+        found: list[str] = []
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("fetching"):
+                continue
+            mid = line.split("\t")[0].split()[0].strip()
+            if mid and any(k in mid.lower() for k in ("gemini", "claude", "gpt", "orchestrator", "neon", "astra", "sol")):
+                found.append(mid)
+        if found:
+            ranked = _rank_models_flagship_first(
+                found,
+                [
+                    "gemini-4-neon-xhigh",
+                    "gemini-4-neon-high",
+                    "gemini-4-neon-medium",
+                    "gemini-4-hydrogen-xhigh",
+                    "gemini-4-hydrogen-high",
+                    "gemini-4-carbon-high",
+                    "gemini-4-argon-high",
+                    "claude-opus-5-5-high",
+                    "claude-opus-5-5-medium",
+                    "claude-sonnet-5-5-high",
+                    "claude-sonnet-5-5-medium",
+                    "gemini-pro-orchestrator-neon",
+                    "gemini-3.8-flash-high",
+                    "gemini-3.8-flash-medium",
+                    "gpt-oss-120b-medium",
+                ],
+            )
+            return _cache_set("agy", ranked[:18])
+    except Exception:
+        pass
+    return _cache_set("agy", fallback)
+
+
+def _discover_gemini_models(api_key: str) -> list[str]:
+    fallback = [
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-carbon",
+        "gemini-4-argon",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-flash-latest",
+    ]
+    if not api_key:
+        return fallback
+    ckey = f"gemini:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+    try:
+        with httpx.Client(timeout=4.0) as client:
+            r = client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}")
+            if r.status_code == 200:
+                skip_tokens = ("tts", "image", "lyria", "robotics", "transcribe", "nano-banana", "computer-use", "deep-research")
+                found: list[str] = []
+                for m in r.json().get("models", []):
+                    methods = m.get("supportedGenerationMethods") or []
+                    if "generateContent" not in methods:
+                        continue
+                    mid = str(m.get("name", "")).replace("models/", "").strip()
+                    low = mid.lower()
+                    if not mid or any(st in low for st in skip_tokens):
+                        continue
+                    if low.startswith(("gemini-", "antigravity-")):
+                        found.append(mid)
+                if found:
+                    ranked = _rank_models_flagship_first(
+                        found,
+                        [
+                            "gemini-4-neon",
+                            "gemini-4-hydrogen",
+                            "gemini-4-carbon",
+                            "gemini-4-argon",
+                            "gemini-3.8-flash",
+                            "gemini-3.7-flash",
+                            "gemini-3.6-flash",
+                            "gemini-3.5-flash",
+                            "gemini-3.1-pro-preview",
+                            "gemini-3.1-flash-lite",
+                            "gemini-2.5-pro",
+                            "gemini-pro-latest",
+                            "gemini-flash-latest",
+                            "gemini-2.5-flash",
+                        ],
+                    )
+                    return _cache_set(ckey, ranked[:16])
+    except Exception:
+        pass
+    return _cache_set(ckey, fallback)
+
+
+def _discover_openai_models(api_key: str) -> list[str]:
+    fallback = ["gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
+    if not api_key:
+        return fallback
+    ckey = f"openai:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+    try:
+        with httpx.Client(timeout=4.0) as client:
+            r = client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+            if r.status_code == 200:
+                skip = ("audio", "realtime", "tts", "whisper", "dall-e", "embedding", "moderation", "transcribe", "image", "sora")
+                found = [
+                    str(m.get("id", "")).strip()
+                    for m in r.json().get("data", [])
+                    if str(m.get("id", "")).startswith(("gpt-5", "gpt-4", "o3", "o4", "o1"))
+                    and not any(s in str(m.get("id", "")).lower() for s in skip)
+                ]
+                if found:
+                    ranked = _rank_models_flagship_first(found, ["gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-4.1", "gpt-4o"])
+                    return _cache_set(ckey, ranked[:14])
+    except Exception:
+        pass
+    return _cache_set(ckey, fallback)
+
+
+def _discover_openrouter_models(api_key: str) -> list[str]:
+    fallback = [
+        "google/gemini-4-neon",
+        "openai/gpt-5.4",
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "x-ai/grok-4",
+        "openai/o3",
+        "google/gemini-3.1-pro-preview",
+    ]
+    if not api_key:
+        return fallback
+    ckey = f"openrouter:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+    try:
+        with httpx.Client(timeout=4.0) as client:
+            r = client.get("https://openrouter.ai/api/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+            if r.status_code == 200:
+                ids = [str(m.get("id", "")).strip() for m in r.json().get("data", []) if m.get("id")]
+                wanted = [
+                    m for m in ids
+                    if any(
+                        p in m.lower()
+                        for p in ("gemini-4", "gemini-3", "gpt-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4", "claude-sonnet-4", "grok-4", "grok-3", "o3")
+                    )
+                ]
+                if wanted:
+                    ranked = _rank_models_flagship_first(
+                        wanted,
+                        ["google/gemini-4-neon", "openai/gpt-5.4", "anthropic/claude-opus-5", "anthropic/claude-opus-4", "anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4", "x-ai/grok-4", "openai/o3"],
+                    )
+                    return _cache_set(ckey, ranked[:14])
+    except Exception:
+        pass
+    return _cache_set(ckey, fallback)
+
 
 def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
     from app.services.hermes_engine import find_antigravity_bin
 
     active_provider = get_setting(db, "ai_provider", "auto")
-    active_model = get_setting(db, "ai_model", "consular-auto")
+    active_model = get_setting(db, "ai_model", "auto-flagship")
 
     agy_bin = find_antigravity_bin()
     codex_connected = bool(get_setting(db, "codex_access_token", ""))
@@ -428,82 +656,96 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
     except Exception:
         pass
 
-    has_openai = bool(get_setting(db, "openai_api_key", os.getenv("OPENAI_API_KEY", "")))
-    has_anthropic = bool(get_setting(db, "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")))
-    has_gemini = bool(get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", "")))
-    has_xai = bool(get_setting(db, "xai_api_key", os.getenv("XAI_API_KEY", "")))
-    has_openrouter = bool(get_setting(db, "openrouter_api_key", os.getenv("OPENROUTER_API_KEY", "")))
-    has_qwen = bool(get_setting(db, "qwen_api_key", ""))
-    has_minimax = bool(get_setting(db, "minimax_api_key", ""))
+    openai_key = get_setting(db, "openai_api_key", os.getenv("OPENAI_API_KEY", ""))
+    anth_key = get_setting(db, "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", ""))
+    gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
+    xai_key = get_setting(db, "xai_api_key", os.getenv("XAI_API_KEY", ""))
+    or_key = get_setting(db, "openrouter_api_key", os.getenv("OPENROUTER_API_KEY", ""))
+    qwen_key = get_setting(db, "qwen_api_key", "")
+    minimax_key = get_setting(db, "minimax_api_key", "")
+
+    agy_models = _discover_agy_models(agy_bin or "")
+    gemini_models = _discover_gemini_models(gem_key)
+    openai_models = _discover_openai_models(openai_key)
+    openrouter_models = _discover_openrouter_models(or_key)
 
     groups = [
         {
-            "group": "Subscriptions (Sign In With Your Account)",
+            "group": "Auto Picker & Subscriptions (Flagships on Top)",
             "items": [
+                {
+                    "provider": "auto",
+                    "label": "★ Auto (Best Flagship)",
+                    "connected": True,
+                    "auth_kind": "builtin",
+                    "models": ["auto-flagship"],
+                },
+                {
+                    "provider": "antigravity",
+                    "label": "Antigravity (Live Catalog)",
+                    "connected": agy_connected,
+                    "auth_kind": "google_oauth",
+                    "models": agy_models,
+                },
                 {
                     "provider": "openai-codex",
                     "label": "ChatGPT / Codex Subscription",
                     "connected": codex_connected,
                     "auth_kind": "oauth_device",
-                    "models": ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "o3"],
+                    "models": ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5", "o3", "o4-mini"],
                 },
                 {
                     "provider": "claude-sub",
                     "label": "Claude Pro / Max Subscription",
                     "connected": claude_sub_connected,
                     "auth_kind": "claude_token",
-                    "models": ["claude-sonnet-4-5", "claude-opus-4-5", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
+                    "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-5", "claude-sonnet-4-5"],
                 },
+            ],
+        },
+        {
+            "group": "Cloud API Keys (Auto-Discovered Flagships)",
+            "items": [
+                {"provider": "gemini", "label": "Google Gemini API", "connected": bool(gem_key), "auth_kind": "api_key", "models": gemini_models},
+                {"provider": "openai", "label": "OpenAI API", "connected": bool(openai_key), "auth_kind": "api_key", "models": openai_models},
                 {
-                    "provider": "antigravity",
-                    "label": "Antigravity (Google OAuth)",
-                    "connected": agy_connected,
-                    "auth_kind": "google_oauth",
-                    "models": ["gemini-3.8-flash-medium", "claude-sonnet-5-5-medium", "gemini-4-argon-high"],
+                    "provider": "anthropic",
+                    "label": "Anthropic Claude API",
+                    "connected": bool(anth_key),
+                    "auth_kind": "api_key",
+                    "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
                 },
+                {"provider": "xai_grok", "label": "xAI Grok (SuperGrok / API)", "connected": bool(xai_key), "auth_kind": "api_key", "models": ["grok-4", "grok-3", "grok-3-mini", "grok-2-latest"]},
+                {"provider": "openrouter", "label": "OpenRouter (All Flagships)", "connected": bool(or_key), "auth_kind": "api_key", "models": openrouter_models},
+                {"provider": "qwen", "label": "Qwen (DashScope / OAuth)", "connected": bool(qwen_key), "auth_kind": "api_key", "models": ["qwen3-max", "qwen-max", "qwen-plus"]},
+                {"provider": "minimax", "label": "MiniMax", "connected": bool(minimax_key), "auth_kind": "api_key", "models": ["MiniMax-M1", "MiniMax-Text-01"]},
             ],
         },
         {
             "group": "Local Private (Free on This PC)",
             "items": [
                 {
-                    "provider": "auto",
-                    "label": "Built-in Consular AI (Auto)",
-                    "connected": True,
-                    "auth_kind": "builtin",
-                    "models": ["consular-auto"],
-                },
-                {
                     "provider": "ollama",
                     "label": "Local Ollama",
                     "connected": len(ollama_models) > 0,
                     "auth_kind": "local_url",
-                    "models": ollama_models or ["llama3.2", "qwen2.5:7b", "mistral"],
+                    "models": ollama_models or ["llama3.3", "qwen2.5:14b", "llama3.2", "mistral"],
                 },
-            ],
-        },
-        {
-            "group": "Cloud API Keys",
-            "items": [
-                {"provider": "openai", "label": "OpenAI API", "connected": has_openai, "auth_kind": "api_key", "models": ["gpt-4o", "gpt-4o-mini", "o3-mini"]},
-                {"provider": "anthropic", "label": "Anthropic Claude API", "connected": has_anthropic, "auth_kind": "api_key", "models": ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]},
-                {"provider": "gemini", "label": "Google Gemini API", "connected": has_gemini, "auth_kind": "api_key", "models": ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview"]},
-                {"provider": "xai_grok", "label": "xAI Grok (SuperGrok / API)", "connected": has_xai, "auth_kind": "api_key", "models": ["grok-3", "grok-2-latest"]},
-                {"provider": "openrouter", "label": "OpenRouter (All Models)", "connected": has_openrouter, "auth_kind": "api_key", "models": ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "x-ai/grok-2"]},
-                {"provider": "qwen", "label": "Qwen (DashScope / OAuth)", "connected": has_qwen, "auth_kind": "api_key", "models": ["qwen-max", "qwen-plus"]},
-                {"provider": "minimax", "label": "MiniMax", "connected": has_minimax, "auth_kind": "api_key", "models": ["MiniMax-Text-01"]},
             ],
         },
     ]
 
-    # Guarantee active_model always matches an actual model for active_provider (prevents HTML <select> showing first option!)
+    # Preserve custom model IDs if the user typed one manually, while normalizing legacy 'consular-auto'
     all_items = [it for grp in groups for it in grp["items"]]
     active_item = next((it for it in all_items if it["provider"] == active_provider), None)
     if active_item and active_item.get("models"):
-        if not active_model or active_model not in active_item["models"]:
+        if not active_model or active_model == "consular-auto":
             active_model = active_item["models"][0]
-    elif not active_model:
-        active_model = "consular-auto"
+        elif active_model not in active_item["models"]:
+            # Keep user's custom model ID visible at the top of that provider's list
+            active_item["models"] = [active_model] + active_item["models"]
+    elif not active_model or active_model == "consular-auto":
+        active_model = "auto-flagship"
 
     return {
         "active_provider": active_provider,

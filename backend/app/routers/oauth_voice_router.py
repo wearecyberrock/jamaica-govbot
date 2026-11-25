@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models import User
 from app.services.connectors import set_setting
 from app.services.oauth_hub import (
+    clear_model_catalog_cache,
     exchange_antigravity_code,
     get_grouped_model_catalog,
     import_local_subscription_tokens,
@@ -82,6 +83,16 @@ def select_active_model(
 ) -> dict[str, Any]:
     set_setting(db, "ai_provider", req.provider.strip(), is_secret=False, category="ai")
     set_setting(db, "ai_model", req.model.strip(), is_secret=False, category="ai")
+    return get_grouped_model_catalog(db)
+
+
+@router.post("/models/refresh")
+def refresh_model_catalog(
+    _user: User = Depends(require_roles("ceo", "staff")),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Force re-discovery of live flagship models from all connected providers."""
+    clear_model_catalog_cache()
     return get_grouped_model_catalog(db)
 
 
