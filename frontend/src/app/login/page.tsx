@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Crown, LogIn, UserPlus, KeyRound, ShieldCheck } from "lucide-react";
 import { apiFetch, setAuthSession } from "@/lib/api";
 import type { BrandingConfig, UserAccount } from "@/lib/types";
+import { DoctorBirdWatermark } from "@/components/DoctorBirdWatermark";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -101,19 +102,25 @@ export default function LoginPage() {
   const displayAgency = branding?.agency_name || "Jahtaria Travel Services";
 
   return (
-    <div className="min-h-screen graphite-ambient flex items-center justify-center p-4">
-      <div className="w-full max-w-md g-card p-7 shadow-2xl space-y-6">
+    <div className="min-h-screen graphite-ambient flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="pointer-events-none select-none absolute inset-0 flex items-center justify-center">
+        <DoctorBirdWatermark variant="backdrop" className="w-[540px] max-w-[90%] opacity-[0.1]" />
+      </div>
+      <div className="w-full max-w-md g-card overflow-hidden shadow-2xl relative z-10 border-[#e5b84b]/20">
+        <div className="h-[3px] w-full ja-ribbon" />
+        <div className="p-7 space-y-6">
         {/* Brand Header */}
         <div className="flex flex-col items-center text-center gap-3">
           <img
             src={branding?.logo_url || "/jahtaria-logo.png"}
             alt={displayAgency}
-            className="w-16 h-16 rounded-full border border-white/20 shadow-lg object-cover bg-black"
+            className="w-16 h-16 rounded-full border-2 border-[#e5b84b]/50 shadow-lg object-cover bg-black"
           />
           <div>
             <h1 className="text-xl font-bold text-slate-100 tracking-tight">{displayAgency}</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              U.S. Visa Intelligence Agent • Kingston Consular Edition
+            <p className="text-xs text-[#e5b84b]/85 mt-0.5 inline-flex items-center gap-1.5">
+              <DoctorBirdWatermark variant="emblem" className="w-4 h-3.5" />
+              U.S. Visa Intelligence Agent • Kingston, Jamaica
             </p>
           </div>
         </div>
@@ -287,6 +294,7 @@ export default function LoginPage() {
         <div className="pt-2 border-t border-white/10 flex items-start gap-2 text-[11px] text-slate-500">
           <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
           <span>Truthful U.S. visa preparation &amp; consular verification only. Local data stays encrypted on this computer.</span>
+        </div>
         </div>
       </div>
     </div>

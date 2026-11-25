@@ -111,8 +111,9 @@ export function RightSidePanel({
           : panelWidth
           ? "max-w-[85vw] h-full shrink-0"
           : "w-full lg:w-[48%] xl:w-[46%] max-w-[680px] h-full shrink-0"
-      } bg-[#111318] border-l border-white/10 flex flex-col`}
+      } bg-[#0f1311] border-l border-[#e5b84b]/12 flex flex-col`}
     >
+      <div className="h-[2px] w-full ja-ribbon shrink-0 opacity-80" />
       {/* Top Panel Bar */}
       <div className="h-12 px-4 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2 min-w-0">

@@ -48,6 +48,7 @@ import { RichMarkdown } from "./RichMarkdown";
 import { ChatQuestionnaireCard } from "./ChatQuestionnaireCard";
 import { ChatDataTableCard } from "./ChatDataTableCard";
 import { DocumentStudioModal } from "./DocumentStudioModal";
+import { DoctorBirdWatermark } from "./DoctorBirdWatermark";
 
 interface PendingActionData {
   id: number;
@@ -514,10 +515,11 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
       {/* ── LEFT GRAPHITE SIDEBAR (Drag-Resizable!) ─ */}
       <aside
         style={{ width: sidebarOpen ? `${leftWidth}px` : "56px" }}
-        className={`h-full bg-[#111318] border-r border-white/10 flex flex-col shrink-0 relative ${
+        className={`h-full bg-[#0f1311] border-r border-[#e5b84b]/12 flex flex-col shrink-0 relative ${
           resizingSide ? "" : "transition-[width] duration-150"
         }`}
       >
+        <div className="h-[2px] w-full ja-ribbon shrink-0 opacity-80" />
         <div className="h-12 px-3 flex items-center justify-between border-b border-white/5">
           {sidebarOpen ? (
             <div className="flex items-center gap-2 min-w-0">
@@ -682,18 +684,35 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
       )}
 
       {/* ── CENTER CHATBOT-FIRST CANVAS ───────────────────────────────────── */}
-      <div className={`flex-1 flex flex-col min-w-0 graphite-ambient relative ${dragActive ? "ring-2 ring-blue-400 ring-inset" : ""}`}>
+      <div className={`flex-1 flex flex-col min-w-0 graphite-ambient relative overflow-hidden ${dragActive ? "ring-2 ring-[#e5b84b] ring-inset" : ""}`}>
+        {/* Subtle Jamaican Green & Gold Hairline Ribbon */}
+        <div className="h-[2px] w-full ja-ribbon shrink-0 opacity-85" />
+
+        {/* Faint Jamaican Doctor Bird Silhouette Backdrop */}
+        <div className="pointer-events-none select-none absolute inset-0 flex items-center justify-center overflow-hidden z-0">
+          <DoctorBirdWatermark
+            variant="backdrop"
+            className={`w-[420px] sm:w-[520px] max-w-[82%] transition-opacity duration-500 ${
+              turns.length === 0 ? "opacity-[0.095]" : "opacity-[0.055]"
+            }`}
+          />
+        </div>
+
         {/* Top Bar with Voice Mode Controls & Side Panel Toggle */}
-        <header className="h-12 px-4 flex items-center justify-between border-b border-white/5 shrink-0 gap-2">
+        <header className="h-12 px-4 flex items-center justify-between border-b border-[#e5b84b]/10 shrink-0 gap-2 relative z-10">
           <div className="flex items-center gap-2 text-xs text-slate-400 min-w-0">
             {!sidebarOpen && (
               <button onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300">
                 <PanelLeft className="w-4 h-4" />
               </button>
             )}
-            <span className="font-semibold text-slate-200 truncate">Visa Intelligence Agent</span>
+            <DoctorBirdWatermark variant="emblem" className="w-6 h-5 shrink-0 opacity-90" />
+            <span className="font-semibold text-slate-100 truncate">Visa Intelligence Agent</span>
+            <span className="hidden md:inline-block px-1.5 py-0.5 rounded bg-emerald-500/10 border border-[#e5b84b]/25 text-[10px] font-medium text-[#e5b84b] shrink-0">
+              Kingston JA
+            </span>
             {activeCaseId && (
-              <span className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-400/20 font-mono text-[11px] shrink-0">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/25 font-mono text-[11px] shrink-0">
                 {activeCaseId}
               </span>
             )}
@@ -748,7 +767,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         </header>
 
         {/* Main Chat Area */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8 py-6">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 relative z-10">
           {turns.length === 0 ? (
             <div className="h-full max-w-2xl mx-auto flex flex-col items-center justify-center gap-7">
               <div className="text-center space-y-2">
@@ -1065,7 +1084,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
 
         {/* Sticky Bottom Prompt Bar */}
         {turns.length > 0 && (
-          <div className="px-4 sm:px-8 pb-4 pt-2 shrink-0">
+          <div className="px-4 sm:px-8 pb-4 pt-2 shrink-0 relative z-10">
             <div className="max-w-2xl mx-auto space-y-2">
               <PromptPill
                 input={input}
@@ -1259,7 +1278,7 @@ function PromptPill({
         </div>
       )}
 
-      <div className="flex items-center gap-1.5 bg-[#1a1d24] border border-white/12 rounded-full px-3 py-2 shadow-xl focus-within:border-blue-400/50 transition overflow-hidden">
+      <div className="flex items-center gap-1.5 bg-[#151a18] border border-[#e5b84b]/20 rounded-full px-3 py-2 shadow-xl focus-within:border-[#e5b84b]/60 transition overflow-hidden">
         {isStaffOrCeo && (
           <button
             type="button"
