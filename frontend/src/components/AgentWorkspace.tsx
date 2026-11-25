@@ -97,6 +97,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   const [resizingSide, setResizingSide] = useState<"left" | "right" | null>(null);
   const [rightPanel, setRightPanel] = useState<PanelRequest | null>(null);
   const [recentPanels, setRecentPanels] = useState<PanelRequest[]>([]);
+  const [pinnedClientIds, setPinnedClientIds] = useState<string[]>([]);
 
   useEffect(() => {
     try {
@@ -104,10 +105,43 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
       const rw = Number(localStorage.getItem("jahtaria_right_width"));
       if (lw >= 180 && lw <= 460) setLeftWidth(lw);
       if (rw >= 320 && rw <= 1400) setRightWidth(rw);
+      const savedPins = localStorage.getItem("jahtaria_pinned_clients");
+      if (savedPins) {
+        const parsed = JSON.parse(savedPins);
+        if (Array.isArray(parsed)) setPinnedClientIds(parsed.filter((x): x is string => typeof x === "string"));
+      }
     } catch {
       // ignore
     }
   }, []);
+
+  const selectActiveClient = (cid: string) => {
+    setActiveCaseId(cid);
+    setPinnedClientIds((prev) => {
+      const next = prev.includes(cid) ? prev : [cid, ...prev];
+      try {
+        localStorage.setItem("jahtaria_pinned_clients", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  const removeActiveClient = (cid: string) => {
+    setPinnedClientIds((prev) => {
+      const next = prev.filter((id) => id !== cid);
+      try {
+        localStorage.setItem("jahtaria_pinned_clients", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      if (activeCaseId === cid) {
+        setActiveCaseId(next[0] || null);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!resizingSide) return;
@@ -239,7 +273,9 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   }, [turns, busy]);
 
   const openPanel = (req: PanelRequest) => {
-    if ((req.panel === "client" || req.panel === "customer_case") && req.case_id) {
+    if (req.panel === "client" && req.case_id) {
+      selectActiveClient(req.case_id);
+    } else if (req.panel === "customer_case" && req.case_id) {
       setActiveCaseId(req.case_id);
     }
     setRightPanel(req);
@@ -593,43 +629,51 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                 <SidebarBtn icon={UserPlus} label="Team & Staff" open={sidebarOpen} active={rightPanel?.panel === "team"} onClick={() => openPanel({ panel: "team", title: "Team & Staff Accounts" })} />
               )}
 
-              {/* Selected Client + Active Clients (updates live when you click any client!) */}
+              {/* User-Picked Active Clients (starts blank; grows as you select clients; click × to remove) */}
               {sidebarOpen && (() => {
-                const liveOnly = activeClients.filter(
-                  (c) => !(c.full_name || "").startsWith("Reference Case") && !(c.full_name || "").startsWith("Case C00")
-                );
-                const selectedObj = activeCaseId ? activeClients.find((c) => c.case_id === activeCaseId) : undefined;
-                const sidebarList = [
-                  ...(selectedObj ? [selectedObj] : []),
-                  ...liveOnly.filter((c) => c.case_id !== selectedObj?.case_id),
-                ].slice(0, 8);
+                const sidebarList = pinnedClientIds
+                  .map((id) => activeClients.find((c) => c.case_id === id))
+                  .filter((c): c is ClientSummary => Boolean(c));
                 if (sidebarList.length === 0) return null;
                 return (
                   <div className="pt-3 mt-2 border-t border-white/10 px-1 space-y-0.5">
                     <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-2 pb-1">
-                      Active Clients
+                      Active Clients ({sidebarList.length})
                     </div>
                     {sidebarList.map((c) => {
                       const isSel = activeCaseId === c.case_id;
                       return (
-                        <button
+                        <div
                           key={c.case_id}
                           onClick={() => {
-                            setActiveCaseId(c.case_id);
+                            selectActiveClient(c.case_id);
                             openPanel({ panel: "client", case_id: c.case_id, subview: "overview", title: `${c.case_id} — ${c.full_name}` });
                           }}
-                          className={`w-full text-left px-2 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition ${
+                          className={`group w-full text-left px-2 py-1.5 rounded-lg text-xs flex items-center justify-between gap-1.5 cursor-pointer transition ${
                             isSel
                               ? "bg-emerald-500/15 text-white border border-emerald-400/30"
                               : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
                           }`}
                         >
-                          <span className="truncate flex items-center gap-1.5">
+                          <span className="truncate flex items-center gap-1.5 min-w-0">
                             {isSel && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />}
                             <span className="truncate">{c.full_name}</span>
                           </span>
-                          <span className="text-[10px] font-mono text-emerald-400 shrink-0">{c.standing_score}%</span>
-                        </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className="text-[10px] font-mono text-emerald-400">{c.standing_score}%</span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeActiveClient(c.case_id);
+                              }}
+                              className="p-0.5 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/15 opacity-70 group-hover:opacity-100 transition"
+                              title={`Remove ${c.full_name} from Active Clients`}
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
@@ -1244,7 +1288,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             isExpanded={rightExpanded}
             onToggleExpand={() => setRightExpanded((v) => !v)}
             onNavigatePanel={openPanel}
-            onSelectCaseForChat={(cid) => setActiveCaseId(cid)}
+            onSelectCaseForChat={(cid) => selectActiveClient(cid)}
             onOpenStudio={(target) => setStudioTarget(target)}
             onImportQuestionnaireToChat={(payload) => {
               setActiveCaseId(payload.case_id);
