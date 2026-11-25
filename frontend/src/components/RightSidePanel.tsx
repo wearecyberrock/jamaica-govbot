@@ -675,7 +675,9 @@ function ClientInspectorSubPanel({
 
         <div className="flex items-center gap-2">
           <select className="g-input text-xs flex-1" value={view} onChange={(e) => setView(e.target.value)}>
-            <option value="overview">Good Standing &amp; Risk Flags ({client.risk_flags.length})</option>
+            <option value="overview">
+              Good Standing &amp; Risk Flags ({client.risk_flags.filter((f) => f.category !== "ai_questionnaire").length})
+            </option>
             <option value="intake">Edit Details &amp; Questionnaire</option>
             <option value="interview">Interview Predictions &amp; Mock Practice</option>
             <option value="blueprints">Documents, Visual Roadmap &amp; Approval ({client.assets.length})</option>

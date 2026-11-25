@@ -866,16 +866,19 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
 
           <div className="flex items-center gap-1.5 shrink-0">
             {/* Voice Persona + Auto-Speak Toggle */}
-            <select
-              value={voicePersona}
-              onChange={(e) => setVoicePersona(e.target.value)}
-              className={`${rightPanel ? "hidden xl:inline-block" : "hidden sm:inline-block"} h-7 bg-white/5 border border-white/10 rounded-lg px-2 text-[11px] text-slate-300 outline-none whitespace-nowrap shrink-0`}
-              title="Voice Persona"
-            >
-              <option value="advisor_ja" className="bg-[#171a21]">Advisor Voice</option>
-              <option value="officer_us" className="bg-[#171a21]">U.S. Officer</option>
-              <option value="advisor_male" className="bg-[#171a21]">Specialist</option>
-            </select>
+            <div className={`${rightPanel ? "hidden 2xl:inline-flex" : "hidden sm:inline-flex"} relative items-center shrink-0`}>
+              <select
+                value={voicePersona}
+                onChange={(e) => setVoicePersona(e.target.value)}
+                className="appearance-none h-7 bg-white/5 border border-white/10 rounded-lg pl-2.5 pr-6 text-[11px] text-slate-300 outline-none whitespace-nowrap cursor-pointer"
+                title="Voice Persona"
+              >
+                <option value="advisor_ja" className="bg-[#171a21]">Advisor Voice</option>
+                <option value="officer_us" className="bg-[#171a21]">U.S. Officer</option>
+                <option value="advisor_male" className="bg-[#171a21]">Specialist</option>
+              </select>
+              <ChevronDown className="w-3 h-3 text-slate-400 pointer-events-none absolute right-2" />
+            </div>
             <button
               onClick={() => {
                 if (speaking) stopSpeaking();
