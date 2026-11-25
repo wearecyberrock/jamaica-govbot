@@ -360,6 +360,19 @@ def test_v220_username_forgot_gmail_zip_delete():
         hc = client.post("/api/gmail/sync-hermes-cron", headers=h)
         assert hc.status_code == 200 and hc.json()["job_count"] >= 5
 
+        # 3b. Create, list, and undo a natural-language Cron Job directly from Chat!
+        cron_cmd = client.post(
+            "/api/agent/command",
+            headers=h,
+            json={"message": "create a daily 9am cron to remind clients whose passport expires within 180 days"},
+        )
+        assert cron_cmd.status_code == 200 and cron_cmd.json()["provider_used"] == "gmail-automation"
+        c_pa = cron_cmd.json()["pending_action"]
+        assert c_pa and c_pa["action_type"] == "create_cron_rule"
+        list_cmd = client.post("/api/agent/command", headers=h, json={"message": "list cron jobs"})
+        assert list_cmd.status_code == 200 and "Scheduled Gmail" in list_cmd.json()["reply"]
+        assert client.post(f"/api/actions/{c_pa['id']}/undo", headers=h).status_code == 200
+
         # 4. Universal ZIP & TXT Client Synthesizer + Confirm + Undo
         zbuf = io.BytesIO()
         with zipfile.ZipFile(zbuf, "w") as zf:

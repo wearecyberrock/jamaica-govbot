@@ -1,7 +1,7 @@
 {
   "name": "jahtaria-visa-desktop",
-  "version": "2.2.0",
-  "description": "Jahtaria Travel Services — U.S. Visa Intelligence & Document Automation Desktop App",
+  "version": "2.3.0",
+  "description": "Jahtaria Visa Intelligence Alpha — U.S. Visa Intelligence & Document Automation Desktop App",
   "author": "Jahtaria Travel Services / Cyberrock",
   "main": "main.js",
   "scripts": {
@@ -16,9 +16,9 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.cyberrock.jahtaria.visasuite",
-    "productName": "Jahtaria Visa Intelligence",
-    "artifactName": "Jahtaria-Visa-Intelligence-Setup-${version}.${ext}",
+    "appId": "com.cyberrock.jahtaria.visasuite.alpha",
+    "productName": "Jahtaria Visa Intelligence Alpha",
+    "artifactName": "Jahtaria-Visa-Intelligence-Alpha-Setup-${version}.${ext}",
     "directories": {
       "output": "dist",
       "buildResources": "build"

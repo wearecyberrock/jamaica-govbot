@@ -826,7 +826,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             )}
             <DoctorBirdWatermark variant="emblem" className="w-5 h-4 shrink-0 opacity-90" />
             <span className={`font-semibold text-slate-100 truncate ${rightPanel ? "hidden xl:inline" : ""}`}>
-              Visa Intelligence Agent
+              Visa Intelligence Alpha
             </span>
             {!rightPanel && (
               <span className="hidden xl:inline-block px-1.5 py-0.5 rounded bg-emerald-500/10 border border-[#e5b84b]/25 text-[10px] font-medium text-[#e5b84b] shrink-0">

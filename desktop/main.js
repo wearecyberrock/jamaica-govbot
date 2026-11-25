@@ -88,7 +88,7 @@ function buildMenu() {
   const vaultDir = path.join(dataDir, "obsidian-vault");
   const template = [
     {
-      label: "Jahtaria Suite",
+      label: "Jahtaria Alpha",
       submenu: [
         {
           label: "Open Obsidian Vault Folder",
@@ -130,7 +130,7 @@ function createWindow() {
     height: 920,
     minWidth: 1080,
     minHeight: 720,
-    title: "Jahtaria Travel Services — U.S. Visa Intelligence Suite",
+    title: "Jahtaria Visa Intelligence Alpha — U.S. Visa Intelligence Suite",
     icon: path.join(__dirname, "build", process.platform === "win32" ? "icon.ico" : "icon.png"),
     backgroundColor: "#0d0f13",
     webPreferences: {

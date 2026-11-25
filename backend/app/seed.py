@@ -944,8 +944,27 @@ def seed_all(db: Session) -> None:
         db.add_all(default_rules)
         db.commit()
 
-    # 10. Seed Obsidian Vault Notes + Featured Client Dossiers
+    # 10. Seed Obsidian Vault Notes + Engineer Package Reference + Featured Client Dossiers
     _seed_obsidian_vault()
+    ref_note_path = OBSIDIAN_VAULT_DIR / "Reference" / "JAHTARIA_Engineer_Package_v01.md"
+    if not ref_note_path.exists():
+        readme_txt = (SEED_PACKAGE_DIR / "README.md").read_text(encoding="utf-8", errors="ignore") if (SEED_PACKAGE_DIR / "README.md").exists() else ""
+        handoff_paras: list[str] = []
+        handoff_doc = SEED_PACKAGE_DIR / "engineering_handoff.docx"
+        if handoff_doc.exists():
+            try:
+                doc = DocxDocument(str(handoff_doc))
+                handoff_paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()][:80]
+            except Exception:
+                pass
+        body = (
+            "# JAHTARIA Visa Intelligence Engineer Package v01 (Bundled Reference)\n\n"
+            "All 8 raw reference files are bundled in `seed_package/` and indexed live in SQLite (`clients`, `interview_events`, `question_taxonomy`, `source_manifest`) for future data ingestion, prediction recall, and audit benchmarking.\n\n"
+            "## Package README\n\n"
+            + readme_txt
+            + ("\n\n## Engineering Handoff Excerpt\n\n" + "\n\n".join(handoff_paras) if handoff_paras else "")
+        )
+        write_vault_note("Reference/JAHTARIA_Engineer_Package_v01.md", body)
     for cid in ("C001", "C002", "C004", "C034"):
         client = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
         if client and not (OBSIDIAN_VAULT_DIR / "Clients" / f"{cid}.md").exists():

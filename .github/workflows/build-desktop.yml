@@ -76,26 +76,29 @@ jobs:
       - name: Upload Setup.exe Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Jahtaria-Visa-Intelligence-Windows-Setup
-          path: desktop/dist/*.exe
+          name: Jahtaria-Visa-Intelligence-Alpha-Windows-Setup
+          path: |
+            desktop/dist/*.exe
+            JAHTARIA_ALPHA_USER_GUIDE.md
 
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.1.0
-          name: "Jahtaria Visa Intelligence Desktop Suite v2.1.0 (Smart Paste, Document & Signature Studio, Editable Spreadsheet & Unlimited Questionnaires)"
+          tag_name: v2.3.0-alpha
+          name: "Jahtaria Visa Intelligence Alpha v2.3.0 (Windows Setup.exe + User Guide)"
           body: |
-            ## Jahtaria Visa Intelligence — v2.1.0 (Setup.exe)
+            ## Jahtaria Visa Intelligence Alpha — v2.3.0 (Windows Setup.exe)
 
-            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Setup-2.1.0.exe`**.
+            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.3.0.exe`**, and read **`JAHTARIA_ALPHA_USER_GUIDE.md`** for a complete walkthrough.
 
-            ### What's New in v2.1.0
-            - **Smart Paste Auto-Setup in Chat:** Paste `Ctrl+V` screenshots/images, drop multiple files, or paste API keys, MCP URLs/JSON, ClawLink creds, or CSV/Excel data right in chat — auto-configures with secret masking, Preview/Confirm & Undo.
-            - **Per-Client Document & Image Vault + Vision OCR:** Categorized per-client storage (`Passport/ID`, `Financial`, `RGD Civil`, `Embassy Forms`, `Photos`), AI Vision field extraction, **1-Click 92% RGD Photocopy Converter**, **AI Auto-Fill Official PDFs**, and **1-Click Embassy Packet Exporter (PDF/ZIP)**.
-            - **Full-Screen Document & Signature Studio:** Open any PDF, image, or DOCX full-screen to place draggable text boxes, checkmarks, dates, and drawn/typed signatures — saves versioned copies while preserving originals.
-            - **Editable Client Spreadsheet + Dynamic In-Chat Data Tables:** Inline cell editing, per-row document/image previews, 1-click Sort Tabs, real `.xlsx` Excel / CSV import & export, dynamic sortable/chartable chat tables, and 11 live `/mcp` tools.
-            - **Interactive In-Chat Questionnaires:** Clean stepper with Tips & Explanations, Multiple Choice, **Import into Chat**, and unlimited question generation.
-            - **Streamlined Connections Hub:** Priority setup order — **ChatGPT OAuth (Recommended) → Composio → ClawLink → Claude/Antigravity OAuth → API Keys**.
-          files: desktop/dist/*.exe
+            ### Highlights in v2.3.0 Alpha
+            - **Username Sign-In, Forgot Password & Commercial Handoff:** Offline Recovery PIN + optional Gmail 6-digit OTP + CEO Reset. Initial setup login (`testaccount` / `testpassword`, Recovery PIN `1234`) converts cleanly into your production CEO account as soon as you rename it.
+            - **Live Auto-Discovery Flagship Model Picker:** `★ Auto · Best Flagship` on top + live discovery for Antigravity (`gemini-4-neon`, `gemini-4-hydrogen`, `claude-opus-5-5`), Google Gemini API, ChatGPT/OpenAI (`gpt-5.4`), Claude, Grok, OpenRouter, Ollama + Custom Model ID input & automatic 503 failover.
+            - **Gmail Automation, Chat Cron Builder & Inbox-to-Vault Sync:** Dual Mode (auto-send routine reminders + approval queue for AI/sensitive messages), create/list/pause/delete cron reminders directly in chat, IMAP inbox polling that auto-saves client email attachments to their Vault, 1-click Copy for WhatsApp, and Hermes Cron export.
+            - **Universal File & ZIP Client Synthesizer + Safe Chat Delete:** Drop `.zip`, `.txt`, `.md`, `.json`, `.csv`, `.xlsx`, `.docx`, or `.pdf` files in chat to synthesize new clients & attach matched vault documents with Confirm/Undo.
+            - **Full-Screen Document & Signature Studio + 92% RGD Converter + Editable Client Spreadsheet:** Complete Kingston Embassy workflow backed by the bundled `JAHTARIA_Visa_Intelligence_Engineer_Package_v01` dataset.
+          files: |
+            desktop/dist/*.exe
+            JAHTARIA_ALPHA_USER_GUIDE.md
           draft: false
-          prerelease: false
+          prerelease: true

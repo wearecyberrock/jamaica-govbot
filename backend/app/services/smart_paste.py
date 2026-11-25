@@ -938,6 +938,178 @@ def detect_chat_gmail_command(
             "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
         }
 
+    from app.models import EmailAutomationRule
+
+    # List all active/inactive cron jobs & reminders
+    if any(k in low for k in ("list cron", "show cron", "my cron", "all cron", "list reminder", "show reminder", "scheduled job", "email rules")):
+        rules = db.query(EmailAutomationRule).order_by(EmailAutomationRule.id.asc()).all()
+        if not rules:
+            return {"reply": "You have no scheduled cron jobs yet. Tell me in chat what you want to schedule (e.g., *'create a daily 9am cron to remind clients whose passport expires in 6 months'*).", "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"}}
+        lines = [
+            f"- **#{r.id} {r.name}** — `{'ON' if r.enabled else 'PAUSED'}` | Mode: `{r.send_mode}` | Cron: `{r.cron_expr}` (every {r.interval_minutes}m, cooldown {r.cooldown_days}d)"
+            for r in rules
+        ]
+        return {
+            "reply": "**Scheduled Gmail & Cron Rules:**\n\n" + "\n".join(lines) + "\n\nSay *'pause cron #3'*, *'delete cron #5'*, or describe any new cron/reminder to add one.",
+            "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
+        }
+
+    # Pause / Resume / Delete a specific cron rule by ID
+    m_ctrl = re.search(r"\b(pause|disable|stop|enable|resume|start|delete|remove)\s+(?:cron|rule|job|reminder)\s*#?(\d+)\b", low)
+    if m_ctrl:
+        verb, rid = m_ctrl.group(1), int(m_ctrl.group(2))
+        rule = db.query(EmailAutomationRule).filter(EmailAutomationRule.id == rid).first()
+        if not rule:
+            return {"reply": f"Could not find Cron Rule **#{rid}**. Say *'list cron jobs'* to see your rule IDs.", "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"}}
+        if verb in ("delete", "remove"):
+            rname = rule.name
+            db.delete(rule)
+            db.commit()
+            sync_rules_to_hermes_cron(db)
+            return {"reply": f"**Deleted Cron Rule #{rid}** (`{rname}`) and updated Hermes Cron.", "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"}}
+        rule.enabled = verb in ("enable", "resume", "start")
+        db.commit()
+        sync_rules_to_hermes_cron(db)
+        return {
+            "reply": f"**Cron Rule #{rid} (`{rule.name}`) is now {'ENABLED' if rule.enabled else 'PAUSED'}.**",
+            "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
+        }
+
+    # Create a brand-new Cron Job or Reminder via natural language (just like Hermes Cron!)
+    is_create_cron = (
+        any(k in low for k in ("cron", "schedule ", "every day", "daily ", "every morning", "every week", "every monday", "every hour", "every ", "remind ", "reminder "))
+        and any(k in low for k in ("create", "add", "set", "make", "schedule", "remind", "every ", "daily", "weekly", "hourly", "auto email", "automatically email"))
+        and not any(k in low for k in ("what is ", "how does ", "how is ", "explain "))
+    )
+    if is_create_cron:
+        from datetime import timedelta
+
+        # Ask live LLM to parse structured cron schedule + rule type (with deterministic fallback)
+        parsed: dict[str, Any] = {}
+        llm_r = call_llm_detailed(
+            db,
+            (
+                "Parse the user's request to create an automated email/reminder cron job. Return ONLY valid JSON with keys:\n"
+                "- name (short title, max 80 chars)\n"
+                "- description (1 sentence)\n"
+                "- rule_type: one of passport_expiry | interview_countdown | missing_docs_red_flags | questionnaire_nudge | post_interview_checkin | ai_autonomous | custom\n"
+                "- send_mode: auto | approval | dual (use 'auto' if they say automatically send, 'approval' if they ask to draft/review, else 'dual')\n"
+                "- cron_expr: standard 5-field cron expression (e.g. '0 9 * * *' for daily 9am)\n"
+                "- interval_minutes: integer (60=hourly, 360=every 6h, 1440=daily, 10080=weekly)\n"
+                "- threshold_days: integer (e.g. 180 for 6-month passport, 7 for 7-day interview)\n"
+                "- cooldown_days: integer (default 7)\n"
+                "- subject_template: string (can use {full_name}, {case_id}, {passport_expiry}, {embassy_interview_date}, {access_code})\n"
+                "- body_template: string\n"
+            ),
+            f"Selected Case: {target_cid or 'All matching clients'}\nUser Request: {msg}",
+        )
+        raw_llm = llm_r.get("text") or ""
+        if raw_llm:
+            try:
+                jm = re.search(r"\{[\s\S]*\}", raw_llm)
+                if jm:
+                    parsed = json.loads(jm.group(0))
+            except Exception:
+                parsed = {}
+
+        # Deterministic smart defaults if LLM unavailable or omitted fields
+        rtype = str(parsed.get("rule_type") or "")
+        if rtype not in ("passport_expiry", "interview_countdown", "missing_docs_red_flags", "questionnaire_nudge", "post_interview_checkin", "ai_autonomous", "custom"):
+            if "passport" in low:
+                rtype = "passport_expiry"
+            elif "interview" in low or "embassy" in low:
+                rtype = "interview_countdown"
+            elif "flag" in low or "missing doc" in low or "rgd" in low:
+                rtype = "missing_docs_red_flags"
+            elif "question" in low:
+                rtype = "questionnaire_nudge"
+            elif "post" in low or "outcome" in low:
+                rtype = "post_interview_checkin"
+            elif "ai" in low or "smart" in low:
+                rtype = "ai_autonomous"
+            else:
+                rtype = "custom"
+
+        interval_m = int(parsed.get("interval_minutes") or 0)
+        cron_e = str(parsed.get("cron_expr") or "").strip()
+        if not interval_m:
+            m_hr = re.search(r"every\s+(\d+)\s*hour", low)
+            m_day = re.search(r"every\s+(\d+)\s*day", low)
+            if m_hr:
+                interval_m = max(60, int(m_hr.group(1)) * 60)
+                cron_e = cron_e or f"0 */{m_hr.group(1)} * * *"
+            elif "hourly" in low or "every hour" in low:
+                interval_m = 60
+                cron_e = cron_e or "0 * * * *"
+            elif "weekly" in low or "every monday" in low or "every week" in low:
+                interval_m = 10080
+                cron_e = cron_e or "0 9 * * 1"
+            elif m_day:
+                interval_m = max(1440, int(m_day.group(1)) * 1440)
+                cron_e = cron_e or f"0 9 */{m_day.group(1)} * *"
+            else:
+                interval_m = 1440
+                cron_e = cron_e or "0 9 * * *"
+        cron_e = cron_e or "0 9 * * *"
+
+        smode = str(parsed.get("send_mode") or "")
+        if smode not in ("auto", "approval", "dual"):
+            smode = "auto" if any(k in low for k in ("automatically", "auto send", "auto-send", "autopilot")) else ("approval" if "approv" in low or "draft" in low else "dual")
+
+        thresh = int(parsed.get("threshold_days") or (180 if rtype == "passport_expiry" else (7 if rtype == "interview_countdown" else 30)))
+        coold = int(parsed.get("cooldown_days") or 7)
+        rname = str(parsed.get("name") or "").strip() or f"Scheduled {rtype.replace('_', ' ').title()}"
+        if target_cid and target_cid not in rname:
+            rname = f"{rname} ({target_cid})"
+        rdesc = str(parsed.get("description") or msg[:200]).strip()
+        rsubj = str(parsed.get("subject_template") or f"[{{case_id}}] {rname}").strip()
+        rbody = str(parsed.get("body_template") or f"Hello {{full_name}},\n\nReminder regarding: {msg}\n\nYour Client Portal Code: {{access_code}}\n\nWarm regards,\n{{agency_name}}").strip()
+
+        new_rule = EmailAutomationRule(
+            name=rname[:190],
+            description=rdesc,
+            rule_type=rtype,
+            enabled=True,
+            send_mode=smode,
+            cron_expr=cron_e,
+            interval_minutes=max(15, interval_m),
+            cooldown_days=max(0, coold),
+            threshold_days=max(1, thresh),
+            subject_template=rsubj[:240],
+            body_template=rbody,
+            use_ai_personalization=True,
+            next_run_at=datetime.now(timezone.utc) + timedelta(minutes=max(15, interval_m)),
+        )
+        db.add(new_rule)
+        db.commit()
+        db.refresh(new_rule)
+        sync_rules_to_hermes_cron(db)
+
+        act = PendingAction(
+            user_id=user.id,
+            action_type="create_cron_rule",
+            target_ref=str(new_rule.id),
+            summary=f"Created Cron Rule #{new_rule.id}: {new_rule.name} (`{new_rule.cron_expr}`, {new_rule.send_mode} mode)",
+            before_json=json.dumps({"rule_id": new_rule.id}),
+            after_json=json.dumps({"rule_id": new_rule.id, "name": new_rule.name, "cron_expr": new_rule.cron_expr}),
+            status="applied",
+        )
+        db.add(act)
+        db.commit()
+        db.refresh(act)
+        return {
+            "reply": (
+                f"**Scheduled Cron Job Created & Active!**\n\n"
+                f"- **Rule #{new_rule.id}:** {new_rule.name}\n"
+                f"- **Trigger Type:** `{new_rule.rule_type}` (window: {new_rule.threshold_days} days, cooldown: {new_rule.cooldown_days} days)\n"
+                f"- **Schedule:** `{new_rule.cron_expr}` (runs automatically every {new_rule.interval_minutes} min + synced to Hermes Cron)\n"
+                f"- **Send Mode:** `{new_rule.send_mode}`\n\n"
+                "You can inspect, edit, or click **Run Now** in the **Gmail & Cron** panel on the right (or click **Undo Change** below to remove it)."
+            ),
+            "pending_action": act,
+            "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
+        }
+
     if target_cid and any(k in low for k in ("email ", "send email", "draft email", "mail ", "notify ", "remind ")) and any(k in low for k in ("email", "mail", "gmail", "remind", "notify", "passport", "interview")):
         client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first()
         if client:

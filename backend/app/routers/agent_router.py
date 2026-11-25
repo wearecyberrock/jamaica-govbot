@@ -644,6 +644,13 @@ def undo_applied_action(
         src = db.query(GovSource).filter(GovSource.source_key == sk).first()
         if src:
             db.delete(src)
+    elif act.action_type == "create_cron_rule":
+        from app.models import EmailAutomationRule
+
+        rid = int(before.get("rule_id") or act.target_ref or 0)
+        r = db.query(EmailAutomationRule).filter(EmailAutomationRule.id == rid).first()
+        if r:
+            db.delete(r)
 
     act.status = "undone"
     db.commit()
@@ -1207,6 +1214,8 @@ def unified_agent_command(
             reply = smart["reply"]
             provider = "smart-paste-engine"
         elif gmail_cmd:
+            if gmail_cmd.get("pending_action"):
+                pending_action_payload = _serialize_action(gmail_cmd["pending_action"])
             ui_panel = gmail_cmd.get("ui_panel")
             reply = gmail_cmd["reply"]
             provider = "gmail-automation"
