@@ -99,11 +99,78 @@ def detect_available_providers(db: Session) -> dict[str, Any]:
 
 
 def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | None, str]:
-    """Route completion across Hermes-supported providers (Antigravity, Ollama, LiteLLM API keys)."""
+    """Route completion across Subscriptions (ChatGPT Codex, Claude Pro/Max, Antigravity), Local Ollama, and Cloud API Keys."""
     provider = get_setting(db, "ai_provider", "auto").lower()
     model = get_setting(db, "ai_model", "")
 
-    # 1. Antigravity CLI subscription runner
+    # 1. ChatGPT / OpenAI Codex Subscription OAuth
+    if provider in ("openai-codex", "auto"):
+        codex_tok = get_setting(db, "codex_access_token", "")
+        if codex_tok:
+            codex_model = model if model and ("gpt-" in model or model.startswith("o")) else "gpt-5.3-codex"
+            try:
+                with httpx.Client(timeout=35.0) as client:
+                    r = client.post(
+                        "https://chatgpt.com/backend-api/codex/responses",
+                        headers={
+                            "Authorization": f"Bearer {codex_tok}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "codex_cli_rs/0.0.0 (Jahtaria Desktop)",
+                        },
+                        json={
+                            "model": codex_model,
+                            "instructions": system_prompt,
+                            "input": [{"role": "user", "content": user_prompt}],
+                            "store": False,
+                            "stream": False,
+                        },
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        txt = data.get("output_text") or ""
+                        if not txt and isinstance(data.get("output"), list):
+                            parts = []
+                            for item in data["output"]:
+                                for c in item.get("content", []):
+                                    if c.get("text"):
+                                        parts.append(c["text"])
+                            txt = "\n".join(parts)
+                        if txt.strip():
+                            return txt.strip(), f"chatgpt-codex:{codex_model}"
+            except Exception:
+                pass
+
+    # 2. Claude Pro / Max Subscription OAuth Token
+    if provider in ("claude-sub", "auto"):
+        claude_tok = get_setting(db, "claude_oauth_token", os.getenv("CLAUDE_CODE_OAUTH_TOKEN", ""))
+        if claude_tok:
+            c_model = model if model.startswith("claude") else "claude-sonnet-4-5"
+            try:
+                with httpx.Client(timeout=35.0) as client:
+                    r = client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "Authorization": f"Bearer {claude_tok}",
+                            "anthropic-version": "2023-06-01",
+                            "anthropic-beta": "oauth-2025-04-20",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": c_model,
+                            "max_tokens": 1200,
+                            "system": system_prompt,
+                            "messages": [{"role": "user", "content": user_prompt}],
+                        },
+                    )
+                    if r.status_code == 200:
+                        blocks = r.json().get("content", [])
+                        txt = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                        if txt.strip():
+                            return txt.strip(), f"claude-subscription:{c_model}"
+            except Exception:
+                pass
+
+    # 3. Antigravity CLI / Google OAuth Subscription
     if provider == "antigravity":
         agy = find_antigravity_bin()
         if agy:
@@ -117,7 +184,7 @@ def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | N
             except Exception:
                 pass
 
-    # 2. Local Ollama
+    # 4. Local Ollama
     if provider in ("ollama", "auto"):
         ollama_url = get_setting(db, "ollama_base_url", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
         ollama_model = get_setting(db, "ollama_model", os.getenv("OLLAMA_MODEL", "llama3.2"))
@@ -142,11 +209,13 @@ def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | N
             if provider == "ollama":
                 return None, "ollama_unreachable"
 
-    # 3. Cloud API Keys (OpenAI, Anthropic, Gemini, xAI Grok, OpenRouter) — direct httpx (works cleanly in Setup.exe!)
+    # 5. Cloud API Keys (OpenAI, xAI Grok, OpenRouter, Qwen, MiniMax, Anthropic, Gemini)
     openai_compat = [
         ("openai", "openai_api_key", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions", model or "gpt-4o-mini"),
         ("xai_grok", "xai_api_key", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions", model or "grok-2-latest"),
         ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/chat/completions", model or "openai/gpt-4o-mini"),
+        ("qwen", "qwen_api_key", "QWEN_API_KEY", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", model or "qwen-plus"),
+        ("minimax", "minimax_api_key", "MINIMAX_API_KEY", "https://api.minimaxi.chat/v1/text/chatcompletion_v2", model or "MiniMax-Text-01"),
     ]
     for prov_id, setting_key, env_key, endpoint, default_model in openai_compat:
         if provider not in ("auto", prov_id):
@@ -174,7 +243,7 @@ def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | N
         except Exception:
             continue
 
-    # Anthropic Claude Messages API
+    # Anthropic Claude API Key
     if provider in ("auto", "anthropic"):
         anth_key = get_setting(db, "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", ""))
         if anth_key:
@@ -203,7 +272,7 @@ def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | N
             except Exception:
                 pass
 
-    # Google Gemini API
+    # Google Gemini API Key
     if provider in ("auto", "gemini"):
         gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
         if gem_key:
@@ -226,7 +295,7 @@ def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | N
             except Exception:
                 pass
 
-    return None, "hermes-local-knowledge"
+    return None, "consular-ai-local"
 
 
 def _gather_gov_context(db: Session, query: str) -> list[GovSource]:
@@ -474,10 +543,10 @@ def run_staff_agent_loop(
     if not llm_reply:
         if tool_trace:
             llm_reply = (
-                f"**Hermes Autonomous Loop Complete** ({len(tool_trace)} tool actions executed):\n\n"
+                f"**AI Consular Agent Complete** ({len(tool_trace)} actions executed):\n\n"
                 + "\n".join(f"- **Step {t['step']} (`{t['tool']}`):** {t['detail']}" for t in tool_trace)
                 + (
-                    "\n\n**Human Approval Gate:** Draft documents are queued under **Blueprints & Documents** for staff review before releasing to the client."
+                    "\n\n**Human Approval Gate:** Draft documents are ready in the side panel for review before releasing to the client."
                     if created_assets
                     else ""
                 )

@@ -124,7 +124,42 @@ def test_full_backend_workflow():
         assert cmd_cust.status_code == 200
         assert "$185" in cmd_cust.json()["reply"] or "AA" in cmd_cust.json()["reply"]
 
-        # 8. Inbound /mcp endpoint works
+        # 8. Grouped Model Catalog, Voice Config, Dynamic Questionnaire, Conversations & CEO Confirm/Undo Edit
+        cat = client.get("/api/models/catalog", headers=ceo_h)
+        assert cat.status_code == 200
+        assert "Hermes" not in cat.text
+        assert any(i["provider"] == "openai-codex" for i in cat.json()["groups"][0]["items"])
+
+        vc = client.get("/api/voice/config", headers=cust_h)
+        assert vc.status_code == 200
+        assert vc.json()["engine"] == "edge"
+
+        dq = client.post("/api/clients/C034/questionnaire/generate", headers=staff_h, json={"focus": "ties"})
+        assert dq.status_code == 200
+        assert len(dq.json()["questions_added"]) >= 1
+
+        # CEO conversational edit -> Confirm -> Undo
+        edit_cmd = client.post(
+            "/api/agent/command",
+            headers=ceo_h,
+            json={"message": "Update C034 gross salary to 325000", "mode": "chat"},
+        )
+        assert edit_cmd.status_code == 200
+        pa = edit_cmd.json()["pending_action"]
+        assert pa is not None and pa["status"] == "pending"
+
+        conf = client.post(f"/api/actions/{pa['id']}/confirm", headers=ceo_h)
+        assert conf.status_code == 200 and conf.json()["status"] == "applied"
+        assert client.get("/api/clients/C034", headers=ceo_h).json()["monthly_gross_jmd"] == 325000.0
+
+        undo = client.post(f"/api/actions/{pa['id']}/undo", headers=ceo_h)
+        assert undo.status_code == 200 and undo.json()["status"] == "undone"
+        assert client.get("/api/clients/C034", headers=ceo_h).json()["monthly_gross_jmd"] == 285000.0
+
+        convs = client.get("/api/conversations", headers=ceo_h)
+        assert convs.status_code == 200 and len(convs.json()) >= 1
+
+        # 9. Inbound /mcp endpoint works
         mcp_list = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         assert mcp_list.status_code == 200
         assert any(t["name"] == "jahtaria_audit_client" for t in mcp_list.json()["result"]["tools"])

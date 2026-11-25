@@ -56,6 +56,7 @@ interface RightSidePanelProps {
   user: UserAccount;
   branding: BrandingConfig | null;
   recentLinks: PanelRequest[];
+  refreshNonce?: number;
   onNavigatePanel: (req: PanelRequest) => void;
   onSelectCaseForChat: (caseId: string) => void;
   onBrandingUpdated: (b: BrandingConfig) => void;
@@ -67,6 +68,7 @@ export function RightSidePanel({
   user,
   branding,
   recentLinks,
+  refreshNonce = 0,
   onNavigatePanel,
   onSelectCaseForChat,
   onBrandingUpdated,
@@ -133,6 +135,7 @@ export function RightSidePanel({
             initialSubview={request.subview || "overview"}
             initialPreviewAssetId={request.preview_asset_id || null}
             isStaffOrCeo={isStaffOrCeo}
+            refreshNonce={refreshNonce}
             onOpenObsidian={(path) => onNavigatePanel({ panel: "obsidian", path, title: `Obsidian — ${path}` })}
           />
         )}
@@ -419,12 +422,14 @@ function ClientInspectorSubPanel({
   initialSubview,
   initialPreviewAssetId,
   isStaffOrCeo,
+  refreshNonce = 0,
   onOpenObsidian,
 }: {
   caseId: string;
   initialSubview: string;
   initialPreviewAssetId: number | null;
   isStaffOrCeo: boolean;
+  refreshNonce?: number;
   onOpenObsidian: (p: string) => void;
 }) {
   const [client, setClient] = useState<ClientDetail | null>(null);
@@ -474,7 +479,7 @@ function ClientInspectorSubPanel({
 
   useEffect(() => {
     load().catch(() => {});
-  }, [caseId]);
+  }, [caseId, refreshNonce]);
 
   const flash = (m: string) => {
     setMsg(m);
@@ -574,54 +579,106 @@ function ClientInspectorSubPanel({
         </div>
       )}
 
-      {/* SUBVIEW: INTAKE FORM */}
+      {/* SUBVIEW: INTAKE FORM & AI-IN-THE-LOOP QUESTIONNAIRE */}
       {view === "intake" && (
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            await apiFetch(`/api/clients/${client.case_id}`, {
-              method: "PATCH",
-              body: JSON.stringify({
-                ...form,
-                monthly_gross_jmd: form.monthly_gross_jmd === "" ? null : Number(form.monthly_gross_jmd),
-                monthly_net_jmd: form.monthly_net_jmd === "" ? null : Number(form.monthly_net_jmd),
-              }),
-            });
-            await load();
-            flash("Saved details & recalculated Good Standing!");
-          }}
-          className="g-card p-3.5 space-y-2.5"
-        >
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              ["full_name", "Full Legal Name"],
-              ["parish", "Parish"],
-              ["passport_number", "Passport #"],
-              ["passport_expiry", "Passport Expiry"],
-              ["ds160_confirmation_id", "DS-160 (AA...)"],
-              ["ais_appointment_barcode", "AIS Barcode"],
-              ["occupation", "Occupation"],
-              ["employer_name", "Employer"],
-              ["monthly_gross_jmd", "Gross JMD / mo"],
-              ["monthly_net_jmd", "Net JMD / mo"],
-              ["us_destination", "U.S. City/State"],
-              ["marital_status", "Legal Marital Status"],
-            ].map(([k, lbl]) => (
-              <div key={k}>
-                <label className="block text-[10px] text-slate-400 mb-0.5">{lbl}</label>
-                <input className="g-input text-xs py-1.5" value={String(form[k] ?? "")} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />
-              </div>
-            ))}
+        <div className="space-y-3">
+          <div className="g-card p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-white">AI-in-the-Loop Interactive Questionnaire</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  await apiFetch(`/api/clients/${client.case_id}/questionnaire/generate`, {
+                    method: "POST",
+                    body: JSON.stringify({ focus: "live readiness & risk gaps" }),
+                  });
+                  await load();
+                  flash("Generated tailored follow-up questions on the fly!");
+                }}
+                className="g-btn-primary px-2.5 py-1 text-[11px] inline-flex items-center gap-1"
+              >
+                <Sparkles className="w-3 h-3" /> Generate Questions
+              </button>
+            </div>
+            {client.risk_flags
+              .filter((f) => f.follow_up_question)
+              .map((f) => (
+                <div key={f.id} className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-slate-200">{f.follow_up_question}</span>
+                    {f.resolved && <span className="text-[10px] text-emerald-400 font-bold shrink-0">Cleared</span>}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      className="g-input text-xs py-1 flex-1"
+                      defaultValue={f.client_response || ""}
+                      placeholder="Type truthful answer & press Enter..."
+                      onKeyDown={async (e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const val = (e.target as HTMLInputElement).value;
+                          await apiFetch(`/api/clients/${client.case_id}/questionnaire`, {
+                            method: "POST",
+                            body: JSON.stringify({ flag_id: f.id, client_response: val, mark_resolved: isStaffOrCeo }),
+                          });
+                          await load();
+                          flash("Answer saved & Good Standing updated live!");
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
           </div>
-          <div>
-            <label className="block text-[10px] text-slate-400 mb-0.5">Purpose of Trip</label>
-            <input className="g-input text-xs py-1.5" value={String(form.purpose_of_trip ?? "")} onChange={(e) => setForm({ ...form, purpose_of_trip: e.target.value })} />
-          </div>
-          <button type="submit" className="g-btn-primary w-full py-2 text-xs">Save &amp; Re-Audit</button>
-        </form>
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await apiFetch(`/api/clients/${client.case_id}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  ...form,
+                  monthly_gross_jmd: form.monthly_gross_jmd === "" ? null : Number(form.monthly_gross_jmd),
+                  monthly_net_jmd: form.monthly_net_jmd === "" ? null : Number(form.monthly_net_jmd),
+                }),
+              });
+              await load();
+              flash("Saved details & recalculated Good Standing!");
+            }}
+            className="g-card p-3.5 space-y-2.5"
+          >
+            <div className="text-xs font-semibold text-slate-300">Client Profile Fields</div>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                ["full_name", "Full Legal Name"],
+                ["parish", "Parish"],
+                ["passport_number", "Passport #"],
+                ["passport_expiry", "Passport Expiry"],
+                ["ds160_confirmation_id", "DS-160 (AA...)"],
+                ["ais_appointment_barcode", "AIS Barcode"],
+                ["occupation", "Occupation"],
+                ["employer_name", "Employer"],
+                ["monthly_gross_jmd", "Gross JMD / mo"],
+                ["monthly_net_jmd", "Net JMD / mo"],
+                ["us_destination", "U.S. City/State"],
+                ["marital_status", "Legal Marital Status"],
+              ].map(([k, lbl]) => (
+                <div key={k}>
+                  <label className="block text-[10px] text-slate-400 mb-0.5">{lbl}</label>
+                  <input className="g-input text-xs py-1.5" value={String(form[k] ?? "")} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />
+                </div>
+              ))}
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-400 mb-0.5">Purpose of Trip</label>
+              <input className="g-input text-xs py-1.5" value={String(form.purpose_of_trip ?? "")} onChange={(e) => setForm({ ...form, purpose_of_trip: e.target.value })} />
+            </div>
+            <button type="submit" className="g-btn-primary w-full py-2 text-xs">Save &amp; Re-Audit</button>
+          </form>
+        </div>
       )}
 
-      {/* SUBVIEW: INTERVIEW PREP & MOCK */}
+      {/* SUBVIEW: INTERVIEW PREP & VOICE MOCK */}
       {(view === "interview" || view === "practice") && (
         <div className="space-y-3">
           {isStaffOrCeo && (
@@ -663,8 +720,29 @@ function ClientInspectorSubPanel({
 
           {mockQ && (
             <div className="g-card p-3.5 space-y-2.5">
-              <div className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" /> Practice: &ldquo;{mockQ.question_text}&rdquo;
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" /> &ldquo;{mockQ.question_text}&rdquo;
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const token = localStorage.getItem("jahtaria_govbot_token") || "";
+                    const r = await fetch("/api/voice/speak", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                      body: JSON.stringify({ text: mockQ.question_text, persona: "officer_us" }),
+                    });
+                    if (r.ok) {
+                      const audio = new Audio(URL.createObjectURL(await r.blob()));
+                      audio.play();
+                    }
+                  }}
+                  className="g-btn-ghost px-2 py-1 text-[11px] shrink-0"
+                  title="Hear U.S. Consular Officer ask this question"
+                >
+                  🔊 Officer Voice
+                </button>
               </div>
               <textarea
                 rows={3}
@@ -1191,7 +1269,7 @@ function TeamSubPanel() {
   );
 }
 
-/* ── 9. COMPACT EASY SETUP, SUBSCRIPTIONS, MCP & WHITE-LABEL BRANDING ──────── */
+/* ── 9. REAL SUBSCRIPTION OAUTH, VOICE STUDIO, COMPOSIO, MCP & WHITE-LABEL ─── */
 function SettingsSubPanel({
   isCeo,
   branding,
@@ -1201,87 +1279,400 @@ function SettingsSubPanel({
   branding: BrandingConfig | null;
   onBrandingUpdated: (b: BrandingConfig) => void;
 }) {
+  const [catalog, setCatalog] = useState<any>(null);
   const [hub, setHub] = useState<any>(null);
-  const [provider, setProvider] = useState("auto");
-  const [model, setModel] = useState("gpt-4o-mini");
+  const [voice, setVoice] = useState<any>(null);
+
+  // OAuth interactive flow states
+  const [codexFlow, setCodexFlow] = useState<{ flow_id: string; user_code: string; verification_uri: string; status: string } | null>(null);
+  const [agyFlow, setAgyFlow] = useState<{ flow_id: string; auth_url: string } | null>(null);
+  const [agyCodeInput, setAgyCodeInput] = useState("");
+  const [claudeTok, setClaudeTok] = useState("");
+  const [showClaudeBox, setShowClaudeBox] = useState(false);
+
+  // API key quick save
+  const [apiProv, setApiProv] = useState("openai");
+  const [apiKeyVal, setApiKeyVal] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
-  const [apiKey, setApiKey] = useState("");
+
+  // Voice settings
+  const [voiceEngine, setVoiceEngine] = useState("edge");
+  const [voicePersona, setVoicePersona] = useState("advisor_ja");
+  const [elevenKey, setElevenKey] = useState("");
+  const [elevenVoiceId, setElevenVoiceId] = useState("JBFqnCBsd6RMkjVDRZzb");
+  const [fishKey, setFishKey] = useState("");
+  const [fishVoiceId, setFishVoiceId] = useState("");
+
+  // Branding
   const [agencyName, setAgencyName] = useState(branding?.agency_name || "Jahtaria Travel Services");
   const [status, setStatus] = useState("");
 
+  const loadAll = async () => {
+    const [cat, h, v] = await Promise.all([
+      apiFetch<any>("/api/models/catalog"),
+      apiFetch<any>("/api/settings/setup-hub"),
+      apiFetch<any>("/api/voice/config"),
+    ]);
+    setCatalog(cat);
+    setHub(h);
+    setVoice(v);
+    setOllamaUrl(h?.ai_providers?.ollama?.base_url || "http://localhost:11434");
+    setVoiceEngine(v?.engine || "edge");
+    setVoicePersona(v?.default_persona || "advisor_ja");
+    setElevenVoiceId(v?.elevenlabs_voice_id || "JBFqnCBsd6RMkjVDRZzb");
+    setFishVoiceId(v?.fish_voice_id || "");
+  };
+
   useEffect(() => {
-    apiFetch<any>("/api/settings/setup-hub")
-      .then((d) => {
-        setHub(d);
-        setProvider(d.ai_providers.active_provider || "auto");
-        setModel(d.ai_providers.active_model || "gpt-4o-mini");
-        setOllamaUrl(d.ai_providers.ollama.base_url || "http://localhost:11434");
-      })
-      .catch(() => {});
+    loadAll().catch(() => {});
   }, []);
+
+  // Poll ChatGPT Codex device-code login automatically
+  useEffect(() => {
+    if (!codexFlow || codexFlow.status !== "pending") return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await apiFetch<{ status: string; error?: string }>(`/api/oauth/poll/${codexFlow.flow_id}`);
+        if (res.status === "connected") {
+          setCodexFlow({ ...codexFlow, status: "connected" });
+          setStatus("ChatGPT / Codex Subscription connected!");
+          loadAll();
+        } else if (res.status === "error" || res.status === "expired") {
+          setCodexFlow({ ...codexFlow, status: res.status });
+          setStatus(res.error || "Sign-in expired. Try again.");
+        }
+      } catch {
+        // ignore poll glitch
+      }
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [codexFlow]);
+
+  const startCodex = async () => {
+    setStatus("Requesting ChatGPT Codex sign-in code...");
+    const res = await apiFetch<any>("/api/oauth/start", { method: "POST", body: JSON.stringify({ provider: "openai-codex" }) });
+    if (res.ok) {
+      setCodexFlow({ flow_id: res.flow_id, user_code: res.user_code, verification_uri: res.verification_uri, status: "pending" });
+      setStatus("Enter the code on OpenAI's page — this panel will auto-connect as soon as you approve.");
+    } else {
+      setStatus(res.error || "Failed to start ChatGPT Codex flow.");
+    }
+  };
+
+  const startAntigravity = async () => {
+    const res = await apiFetch<any>("/api/oauth/start", { method: "POST", body: JSON.stringify({ provider: "antigravity" }) });
+    if (res.ok) {
+      setAgyFlow({ flow_id: res.flow_id, auth_url: res.auth_url });
+      setStatus("Open the Google Sign-In link, then paste the redirected URL or code below.");
+    }
+  };
+
+  const finishAntigravity = async () => {
+    if (!agyFlow || !agyCodeInput.trim()) return;
+    const res = await apiFetch<any>("/api/oauth/exchange", {
+      method: "POST",
+      body: JSON.stringify({ flow_id: agyFlow.flow_id, code_or_url: agyCodeInput }),
+    });
+    if (res.ok) {
+      setAgyFlow(null);
+      setAgyCodeInput("");
+      setStatus("Antigravity Google account connected!");
+      loadAll();
+    } else {
+      setStatus(res.error || "Token exchange failed.");
+    }
+  };
+
+  const testVoice = async () => {
+    setStatus("Generating sample voice audio...");
+    try {
+      const token = localStorage.getItem("jahtaria_govbot_token") || "";
+      const res = await fetch("/api/voice/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          text: "Good day! Your U.S. visa preparation voice engine is connected and ready for Kingston Embassy interview practice.",
+          persona: voicePersona,
+          engine: voiceEngine,
+        }),
+      });
+      if (!res.ok) throw new Error("Voice test failed");
+      const blob = await res.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      audio.play();
+      setStatus("Playing live voice preview!");
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : "Voice test failed");
+    }
+  };
+
+  const downloadMcpJson = () => {
+    const snippet = hub?.claude_desktop_snippet || "{}";
+    const blob = new Blob([snippet], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "jahtaria-visa-mcp-config.json";
+    a.click();
+    setStatus("Downloaded jahtaria-visa-mcp-config.json!");
+  };
+
+  const subItems = catalog?.groups?.[0]?.items || [];
 
   return (
     <div className="space-y-3.5">
-      {/* AI Engine */}
+      {status && (
+        <div className="p-2.5 rounded-xl bg-blue-500/15 border border-blue-400/30 text-xs text-blue-200">{status}</div>
+      )}
+
+      {/* 1. SUBSCRIPTION LOGINS (ChatGPT Codex, Claude Pro/Max, Antigravity) */}
+      <div className="g-card p-3.5 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-white">1. AI Subscriptions (Sign In With Your Account)</span>
+          <button
+            onClick={async () => {
+              const r = await apiFetch<{ count: number; imported: string[] }>("/api/oauth/import-local", { method: "POST" });
+              setStatus(r.count ? `Auto-imported local sign-in(s): ${r.imported.join(", ")}` : "No local CLI tokens found on this PC — use Sign In buttons below.");
+              loadAll();
+            }}
+            className="text-[11px] text-blue-400 hover:underline"
+          >
+            Auto-Detect Local Sign-In
+          </button>
+        </div>
+
+        {/* ChatGPT / Codex Subscription */}
+        <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-2">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <div>
+              <div className="font-semibold text-white">ChatGPT / OpenAI Codex Subscription</div>
+              <div className="text-[11px] text-slate-400">Uses your ChatGPT Plus / Pro account via device OAuth</div>
+            </div>
+            {subItems.find((i: any) => i.provider === "openai-codex")?.connected ? (
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+            ) : (
+              <button onClick={startCodex} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
+                Sign In with ChatGPT
+              </button>
+            )}
+          </div>
+          {codexFlow && codexFlow.status === "pending" && (
+            <div className="p-2.5 rounded-lg bg-black/40 border border-blue-400/30 space-y-2 text-xs">
+              <div className="text-slate-300">Enter this code on OpenAI&apos;s sign-in page:</div>
+              <div className="flex items-center justify-between gap-2">
+                <code className="text-base font-bold tracking-widest text-amber-300">{codexFlow.user_code}</code>
+                <a
+                  href={codexFlow.verification_uri}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="g-btn-primary px-3 py-1.5 text-[11px] inline-flex items-center gap-1"
+                >
+                  Open OpenAI Sign-In <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+              <div className="text-[10px] text-slate-400">Waiting for approval… auto-detects in a few seconds.</div>
+            </div>
+          )}
+        </div>
+
+        {/* Claude Pro / Max Subscription */}
+        <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-2">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <div>
+              <div className="font-semibold text-white">Claude Pro / Max Subscription</div>
+              <div className="text-[11px] text-slate-400">Connect via Claude Code sign-in or `claude setup-token`</div>
+            </div>
+            {subItems.find((i: any) => i.provider === "claude-sub")?.connected ? (
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+            ) : (
+              <button onClick={() => setShowClaudeBox(!showClaudeBox)} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
+                Connect Claude
+              </button>
+            )}
+          </div>
+          {showClaudeBox && (
+            <div className="flex gap-2">
+              <input
+                className="g-input text-xs"
+                type="password"
+                placeholder="Paste Claude OAuth / setup-token..."
+                value={claudeTok}
+                onChange={(e) => setClaudeTok(e.target.value)}
+              />
+              <button
+                onClick={async () => {
+                  await apiFetch("/api/oauth/claude-token", { method: "POST", body: JSON.stringify({ token: claudeTok }) });
+                  setClaudeTok("");
+                  setShowClaudeBox(false);
+                  setStatus("Claude subscription connected!");
+                  loadAll();
+                }}
+                className="g-btn-primary px-3 text-xs shrink-0"
+              >
+                Save
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Antigravity Google OAuth */}
+        <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-2">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <div>
+              <div className="font-semibold text-white">Antigravity (Google OAuth)</div>
+              <div className="text-[11px] text-slate-400">Sign in with your Google Antigravity account</div>
+            </div>
+            {subItems.find((i: any) => i.provider === "antigravity")?.connected ? (
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+            ) : (
+              <button onClick={startAntigravity} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
+                Sign In with Google
+              </button>
+            )}
+          </div>
+          {agyFlow && (
+            <div className="p-2.5 rounded-lg bg-black/40 border border-blue-400/30 space-y-2 text-xs">
+              <a href={agyFlow.auth_url} target="_blank" rel="noreferrer" className="g-btn-primary px-3 py-1.5 text-[11px] inline-flex items-center gap-1">
+                1. Open Google OAuth Sign-In <ExternalLink className="w-3 h-3" />
+              </a>
+              <div className="flex gap-2">
+                <input
+                  className="g-input text-xs"
+                  placeholder="2. Paste redirected URL or auth code here..."
+                  value={agyCodeInput}
+                  onChange={(e) => setAgyCodeInput(e.target.value)}
+                />
+                <button onClick={finishAntigravity} className="g-btn-primary px-3 text-xs shrink-0">
+                  Link
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 2. CLOUD API KEYS & LOCAL OLLAMA */}
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          const body: Record<string, unknown> = { ai_provider: provider, ai_model: model, ollama_base_url: ollamaUrl };
-          if (apiKey.trim()) {
-            if (provider === "openai") body.openai_api_key = apiKey;
-            else if (provider === "anthropic") body.anthropic_api_key = apiKey;
-            else if (provider === "gemini") body.gemini_api_key = apiKey;
-            else if (provider === "xai_grok") body.xai_api_key = apiKey;
-            else if (provider === "openrouter") body.openrouter_api_key = apiKey;
+          const body: Record<string, unknown> = { ai_provider: apiProv, ollama_base_url: ollamaUrl };
+          if (apiKeyVal.trim()) {
+            const keyField: Record<string, string> = {
+              openai: "openai_api_key",
+              anthropic: "anthropic_api_key",
+              gemini: "gemini_api_key",
+              xai_grok: "xai_api_key",
+              openrouter: "openrouter_api_key",
+            };
+            if (keyField[apiProv]) body[keyField[apiProv]] = apiKeyVal.trim();
           }
           await apiFetch("/api/settings/ai-provider", { method: "POST", body: JSON.stringify(body) });
-          setApiKey("");
-          setStatus("AI provider settings saved (Fernet encrypted).");
+          setApiKeyVal("");
+          setStatus("Saved encrypted provider key.");
+          loadAll();
         }}
         className="g-card p-3.5 space-y-2.5"
       >
-        <div className="text-xs font-semibold text-white">1. AI Engine &amp; Subscriptions</div>
-        <select className="g-input text-xs" value={provider} onChange={(e) => setProvider(e.target.value)}>
-          <option value="auto">Hermes Auto (Ollama → Keys → Local Rules)</option>
-          <option value="antigravity">Antigravity Subscription (`agy` CLI)</option>
-          <option value="ollama">Local Ollama (Private Desktop)</option>
-          <option value="openai">OpenAI / ChatGPT API</option>
-          <option value="anthropic">Anthropic / Claude API</option>
-          <option value="gemini">Google Gemini API</option>
-          <option value="xai_grok">xAI Grok API</option>
-          <option value="openrouter">OpenRouter</option>
-        </select>
-        <input className="g-input text-xs" placeholder="Model ID (e.g. gpt-4o-mini)" value={model} onChange={(e) => setModel(e.target.value)} />
-        {provider === "ollama" ? (
-          <input className="g-input text-xs" placeholder="Ollama URL" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} />
-        ) : (
-          <input className="g-input text-xs" type="password" placeholder="API Key (optional — encrypted at rest)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
-        )}
-        <button type="submit" className="g-btn-primary w-full py-2 text-xs">Save Provider</button>
+        <div className="text-xs font-semibold text-white">2. Local Ollama &amp; Cloud API Keys (Grok, OpenAI, Claude, Gemini, OpenRouter)</div>
+        <div className="grid grid-cols-1 sm:grid-cols-[145px_1fr_auto] gap-2">
+          <select className="g-input text-xs" value={apiProv} onChange={(e) => setApiProv(e.target.value)}>
+            <option value="ollama">Local Ollama</option>
+            <option value="openai">OpenAI API</option>
+            <option value="anthropic">Anthropic API</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="xai_grok">xAI Grok</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+          {apiProv === "ollama" ? (
+            <input className="g-input text-xs min-w-0" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" />
+          ) : (
+            <input className="g-input text-xs min-w-0" type="password" value={apiKeyVal} onChange={(e) => setApiKeyVal(e.target.value)} placeholder="Paste encrypted API key..." />
+          )}
+          <button type="submit" className="g-btn-primary px-3.5 text-xs shrink-0">Save</button>
+        </div>
       </form>
 
-      {/* Built-in /mcp */}
-      <div className="g-card p-3.5 space-y-2">
+      {/* 3. VOICE ENGINE (FREE EDGE NEURAL + ELEVENLABS FLASH + FISH AUDIO) */}
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          await apiFetch("/api/voice/config", {
+            method: "POST",
+            body: JSON.stringify({
+              engine: voiceEngine,
+              default_persona: voicePersona,
+              elevenlabs_api_key: elevenKey || undefined,
+              elevenlabs_voice_id: elevenVoiceId,
+              fish_api_key: fishKey || undefined,
+              fish_voice_id: fishVoiceId,
+            }),
+          });
+          setElevenKey("");
+          setFishKey("");
+          setStatus("Voice Engine settings saved!");
+          loadAll();
+        }}
+        className="g-card p-3.5 space-y-2.5"
+      >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-white">2. Built-in /mcp Server (Claude / ChatGPT / Antigravity)</span>
-          <button
-            onClick={() => {
-              navigator.clipboard?.writeText(hub?.claude_desktop_snippet || "");
-              setStatus("Copied MCP JSON config!");
-            }}
-            className="text-[11px] text-blue-400 inline-flex items-center gap-1"
-          >
-            <Copy className="w-3 h-3" /> Copy
+          <span className="text-xs font-semibold text-white">3. Voice Engine (Mock Interviews &amp; Hands-Free AI)</span>
+          <button type="button" onClick={testVoice} className="text-[11px] text-emerald-400 hover:underline font-semibold">
+            Test Voice 🔊
           </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <select className="g-input text-xs" value={voiceEngine} onChange={(e) => setVoiceEngine(e.target.value)}>
+            <option value="edge">Free Neural Voices (Built-in Edge)</option>
+            <option value="elevenlabs">ElevenLabs Flash API</option>
+            <option value="fish">Fish Audio API</option>
+          </select>
+          <select className="g-input text-xs" value={voicePersona} onChange={(e) => setVoicePersona(e.target.value)}>
+            {(voice?.personas || []).map((p: any) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+        </div>
+        {voiceEngine === "elevenlabs" && (
+          <div className="grid grid-cols-2 gap-2">
+            <input className="g-input text-xs" type="password" placeholder={voice?.elevenlabs_configured ? `ElevenLabs (${voice.elevenlabs_key_masked})` : "ElevenLabs API Key"} value={elevenKey} onChange={(e) => setElevenKey(e.target.value)} />
+            <input className="g-input text-xs" placeholder="ElevenLabs Voice ID" value={elevenVoiceId} onChange={(e) => setElevenVoiceId(e.target.value)} />
+          </div>
+        )}
+        {voiceEngine === "fish" && (
+          <div className="grid grid-cols-2 gap-2">
+            <input className="g-input text-xs" type="password" placeholder={voice?.fish_configured ? `Fish Key (${voice.fish_key_masked})` : "Fish Audio API Key"} value={fishKey} onChange={(e) => setFishKey(e.target.value)} />
+            <input className="g-input text-xs" placeholder="Fish Reference Voice ID" value={fishVoiceId} onChange={(e) => setFishVoiceId(e.target.value)} />
+          </div>
+        )}
+        <button type="submit" className="g-btn-primary w-full py-1.5 text-xs">Save Voice Settings</button>
+      </form>
+
+      {/* 4. BUILT-IN /mcp EXPORT (Connect Claude Desktop, ChatGPT & Antigravity on Your PC) */}
+      <div className="g-card p-3.5 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-white">4. Connect Antigravity / Claude / ChatGPT (/mcp)</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(hub?.claude_desktop_snippet || "");
+                setStatus("Copied MCP JSON config!");
+              }}
+              className="text-[11px] text-blue-400 inline-flex items-center gap-1"
+            >
+              <Copy className="w-3 h-3" /> Copy
+            </button>
+            <button onClick={downloadMcpJson} className="text-[11px] text-emerald-400 inline-flex items-center gap-1">
+              <Download className="w-3 h-3" /> Export JSON
+            </button>
+          </div>
         </div>
         <code className="block text-[11px] bg-black/40 p-2 rounded text-emerald-400 break-all">
           {hub?.inbound_mcp_endpoint || "http://127.0.0.1:8010/mcp"}
         </code>
       </div>
 
-      {/* Composio Quick Toggles */}
+      {/* 5. COMPOSIO + WHITE-LABEL BRANDING */}
       <div className="g-card p-3.5 space-y-2">
-        <div className="text-xs font-semibold text-white">3. Composio Integrations (Gmail, Sheets, Docs, MS 365)</div>
+        <div className="text-xs font-semibold text-white">5. Composio Apps (Gmail, Sheets, Docs, MS 365)</div>
         {(hub?.composio?.apps || []).map((a: any) => (
           <div key={a.app_id} className="flex items-center justify-between text-xs py-1">
             <span className="text-slate-300">{a.name}</span>
@@ -1303,7 +1694,6 @@ function SettingsSubPanel({
         ))}
       </div>
 
-      {/* White-Label Branding (CEO Only) */}
       {isCeo && (
         <form
           onSubmit={async (e) => {
@@ -1313,17 +1703,17 @@ function SettingsSubPanel({
               body: JSON.stringify({ agency_name: agencyName }),
             });
             onBrandingUpdated(b);
-            setStatus("White-label agency name updated!");
+            setStatus("White-label agency branding updated!");
           }}
           className="g-card p-3.5 space-y-2"
         >
-          <div className="text-xs font-semibold text-white">4. White-Label Agency Branding (CEO)</div>
-          <input className="g-input text-xs" value={agencyName} onChange={(e) => setAgencyName(e.target.value)} />
-          <button type="submit" className="g-btn-primary w-full py-1.5 text-xs">Update Branding</button>
+          <div className="text-xs font-semibold text-white">6. White-Label Agency Branding (CEO)</div>
+          <div className="flex gap-2">
+            <input className="g-input text-xs flex-1" value={agencyName} onChange={(e) => setAgencyName(e.target.value)} />
+            <button type="submit" className="g-btn-primary px-3 text-xs shrink-0">Save</button>
+          </div>
         </form>
       )}
-
-      {status && <div className="text-xs text-emerald-400">{status}</div>}
     </div>
   );
 }

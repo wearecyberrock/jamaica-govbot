@@ -349,5 +349,36 @@ class ChatMessage(Base):
     sender: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant | tool
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tool_trace_json: Mapped[str] = mapped_column(Text, default="[]")
-    provider_used: Mapped[str] = mapped_column(String(64), default="hermes-rules")
+    provider_used: Mapped[str] = mapped_column(String(64), default="consular-engine")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Conversation(Base):
+    """Saved multi-conversation threads displayed in the left sidebar."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(255), default="New Conversation")
+    case_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PendingAction(Base):
+    """CEO & Staff conversational edit proposals with 1-click Confirm & Undo audit trail."""
+
+    __tablename__ = "pending_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)  # update_client | update_branding | create_staff | update_obsidian | regenerate_doc
+    target_ref: Mapped[str] = mapped_column(String(128), default="")
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    before_json: Mapped[str] = mapped_column(Text, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(32), default="pending")  # pending | applied | undone | cancelled
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+

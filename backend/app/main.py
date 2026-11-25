@@ -19,6 +19,7 @@ from app.routers import (
     database_router,
     documents_router,
     interviews_router,
+    oauth_voice_router,
     obsidian_router,
 )
 from app.seed import seed_all
@@ -37,7 +38,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title=f"{APP_NAME} — Visa Intelligence & Document Automation API",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -57,6 +58,7 @@ app.include_router(database_router.router)
 app.include_router(obsidian_router.router)
 app.include_router(agent_router.router)
 app.include_router(ceo_settings_router.router)
+app.include_router(oauth_voice_router.router)
 
 
 @app.get("/health")
