@@ -518,19 +518,33 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   const agencyName = branding?.agency_name || "Jahtaria Travel Services";
 
   const starterPrompts = isCeo
-    ? [
-        { label: "Show CEO analytics, approval graph & prediction recall", mode: "chat" as const },
-        { label: "Audit C034 and generate visual roadmap png & DS-160 worksheet", mode: "task" as const },
-        { label: "Generate follow-up questionnaire for C034", mode: "chat" as const },
-        { label: "Open AI subscriptions, ChatGPT Codex, Claude & Voice setup", mode: "chat" as const },
-      ]
+    ? activeCaseId
+      ? [
+          { label: "Show CEO analytics, approval rates & prediction recall", mode: "chat" as const },
+          { label: `Audit ${activeCaseId} and generate visual roadmap & DS-160 worksheet`, mode: "task" as const },
+          { label: `Generate interactive follow-up questionnaire for ${activeCaseId}`, mode: "chat" as const },
+          { label: "Open Gmail automation & scheduled client reminders", mode: "chat" as const },
+        ]
+      : [
+          { label: "Show CEO analytics, approval rates & prediction recall", mode: "chat" as const },
+          { label: "Show client spreadsheet sorted by denial risk", mode: "chat" as const },
+          { label: "Open Gmail automation & scheduled client reminders", mode: "chat" as const },
+          { label: "Open AI, Connections & Voice setup", mode: "chat" as const },
+        ]
     : isStaffOrCeo
-    ? [
-        { label: "Show active client pipeline", mode: "chat" as const },
-        { label: "Audit C005 for barcode mismatch & denial risks", mode: "task" as const },
-        { label: "Generate follow-up questionnaire for C034", mode: "chat" as const },
-        { label: "Open PICA adult passport renewal PDF", mode: "chat" as const },
-      ]
+    ? activeCaseId
+      ? [
+          { label: "Show client pipeline & cases needing review", mode: "chat" as const },
+          { label: `Audit ${activeCaseId} for DS-160 barcode & denial risks`, mode: "task" as const },
+          { label: `Generate interactive follow-up questionnaire for ${activeCaseId}`, mode: "chat" as const },
+          { label: "Open official PICA passport renewal PDF", mode: "chat" as const },
+        ]
+      : [
+          { label: "Show client pipeline & cases needing review", mode: "chat" as const },
+          { label: "Show client spreadsheet sorted by denial risk", mode: "chat" as const },
+          { label: "Open Gmail automation & approval queue", mode: "chat" as const },
+          { label: "Open official PICA passport renewal PDF", mode: "chat" as const },
+        ]
     : [
         { label: "Show my case status & Good Standing score", mode: "chat" as const },
         { label: "Generate tailored follow-up questions for my visa profile", mode: "chat" as const },
