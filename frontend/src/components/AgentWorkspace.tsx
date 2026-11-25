@@ -32,9 +32,10 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { apiFetch, clearAuthSession, getStoredToken, getStoredUser } from "@/lib/api";
-import type { BrandingConfig, ClientSummary, UserAccount } from "@/lib/types";
+import type { BrandingConfig, ChatQuestionnairePayload, ClientSummary, UserAccount } from "@/lib/types";
 import { RightSidePanel, type PanelRequest } from "./RightSidePanel";
 import { RichMarkdown } from "./RichMarkdown";
+import { ChatQuestionnaireCard } from "./ChatQuestionnaireCard";
 
 interface PendingActionData {
   id: number;
@@ -55,6 +56,7 @@ interface ChatTurn {
   created_assets?: Array<{ id: number; title: string; mime_type: string; file_url: string }>;
   panel?: PanelRequest | null;
   pending_action?: PendingActionData | null;
+  questionnaire?: ChatQuestionnairePayload | null;
 }
 
 interface SavedConv {
@@ -303,6 +305,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         created_assets: Array<{ id: number; title: string; mime_type: string; file_url: string }>;
         ui_panel: PanelRequest | null;
         pending_action: PendingActionData | null;
+        questionnaire?: ChatQuestionnairePayload | null;
       }>("/api/agent/command", {
         method: "POST",
         body: JSON.stringify({
@@ -333,6 +336,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           created_assets: res.created_assets,
           panel: res.ui_panel,
           pending_action: res.pending_action,
+          questionnaire: res.questionnaire || null,
         },
       ]);
 
@@ -725,6 +729,20 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
 
                     {t.sender === "assistant" ? <RichMarkdown content={t.content} /> : <div>{t.content}</div>}
 
+                    {/* Interactive In-Chat Questionnaire Card (Tips, Explanation, Multiple Choice & Unlimited Generation) */}
+                    {t.questionnaire && (
+                      <ChatQuestionnaireCard
+                        initialData={t.questionnaire}
+                        isStaffOrCeo={isStaffOrCeo}
+                        onSync={(updated) => {
+                          setTurns((prev) =>
+                            prev.map((turn, ti) => (ti === idx ? { ...turn, questionnaire: updated } : turn))
+                          );
+                          setPanelRefreshNonce((n) => n + 1);
+                        }}
+                      />
+                    )}
+
                     {/* CEO Preview / Confirm & Undo Action Card */}
                     {t.pending_action && (
                       <div className="mt-3 g-card p-3.5 space-y-2.5 border-amber-400/30">
@@ -878,6 +896,17 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           refreshNonce={panelRefreshNonce}
           onNavigatePanel={openPanel}
           onSelectCaseForChat={(cid) => setActiveCaseId(cid)}
+          onImportQuestionnaireToChat={(payload) => {
+            setActiveCaseId(payload.case_id);
+            setTurns((prev) => [
+              ...prev,
+              {
+                sender: "assistant",
+                content: `Imported **${payload.case_id} — ${payload.client_name}** questionnaire (**${payload.total_count} questions**) into chat. Click **Tips** on any question for an explanation, pick a choice or type your answer, or click **+ Add More** to generate any number of additional questions.`,
+                questionnaire: payload,
+              },
+            ]);
+          }}
           onBrandingUpdated={(b) => {
             setBranding(b);
             loadModelCatalog();

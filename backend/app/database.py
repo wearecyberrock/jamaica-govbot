@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import DATABASE_URL
@@ -46,3 +46,13 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     from app import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    # Safe additive column migrations for existing desktop SQLite databases
+    try:
+        insp = inspect(engine)
+        if "risk_flags" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("risk_flags")}
+            if "options_json" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE risk_flags ADD COLUMN options_json TEXT DEFAULT '[]'"))
+    except Exception:
+        pass

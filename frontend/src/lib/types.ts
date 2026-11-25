@@ -32,6 +32,7 @@ export interface RiskFlag {
   suggested_fix: string;
   follow_up_question: string;
   client_response: string;
+  options?: string[];
   source_citation: string;
   source_url: string;
   score_impact: number;
@@ -201,4 +202,28 @@ export interface VaultNoteMeta {
   links: string[];
   tags: string[];
   excerpt: string;
+}
+
+export interface QuestionnaireItem {
+  flag_id: number;
+  code: string;
+  title: string;
+  question: string;
+  explanation: string;
+  tip: string;
+  options: string[];
+  client_response: string;
+  resolved: boolean;
+  severity: string;
+  source_citation?: string;
+}
+
+export interface ChatQuestionnairePayload {
+  case_id: string;
+  client_name: string;
+  visa_class: string;
+  standing_score: number;
+  total_count: number;
+  answered_count: number;
+  items: QuestionnaireItem[];
 }

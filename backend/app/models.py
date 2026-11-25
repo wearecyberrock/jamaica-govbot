@@ -192,6 +192,7 @@ class RiskFlag(Base):
     suggested_fix: Mapped[str] = mapped_column(Text, default="")
     follow_up_question: Mapped[str] = mapped_column(Text, default="")
     client_response: Mapped[str] = mapped_column(Text, default="")
+    options_json: Mapped[str] = mapped_column(Text, default="[]")
     source_citation: Mapped[str] = mapped_column(String(255), default="")
     source_url: Mapped[str] = mapped_column(String(512), default="")
     score_impact: Mapped[int] = mapped_column(Integer, default=0)

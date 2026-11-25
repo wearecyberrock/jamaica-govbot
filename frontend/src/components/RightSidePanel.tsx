@@ -18,10 +18,13 @@ import {
   FileText,
   Sparkles,
   BookOpen,
+  Lightbulb,
+  MessageSquarePlus,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type {
   BrandingConfig,
+  ChatQuestionnairePayload,
   ClientDetail,
   ClientSummary,
   GovSourceItem,
@@ -59,6 +62,7 @@ interface RightSidePanelProps {
   refreshNonce?: number;
   onNavigatePanel: (req: PanelRequest) => void;
   onSelectCaseForChat: (caseId: string) => void;
+  onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
   onBrandingUpdated: (b: BrandingConfig) => void;
   onClose: () => void;
 }
@@ -71,6 +75,7 @@ export function RightSidePanel({
   refreshNonce = 0,
   onNavigatePanel,
   onSelectCaseForChat,
+  onImportQuestionnaireToChat,
   onBrandingUpdated,
   onClose,
 }: RightSidePanelProps) {
@@ -136,6 +141,7 @@ export function RightSidePanel({
             initialPreviewAssetId={request.preview_asset_id || null}
             isStaffOrCeo={isStaffOrCeo}
             refreshNonce={refreshNonce}
+            onImportQuestionnaireToChat={onImportQuestionnaireToChat}
             onOpenObsidian={(path) => onNavigatePanel({ panel: "obsidian", path, title: `Obsidian — ${path}` })}
           />
         )}
@@ -423,6 +429,7 @@ function ClientInspectorSubPanel({
   initialPreviewAssetId,
   isStaffOrCeo,
   refreshNonce = 0,
+  onImportQuestionnaireToChat,
   onOpenObsidian,
 }: {
   caseId: string;
@@ -430,6 +437,7 @@ function ClientInspectorSubPanel({
   initialPreviewAssetId: number | null;
   isStaffOrCeo: boolean;
   refreshNonce?: number;
+  onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
   onOpenObsidian: (p: string) => void;
 }) {
   const [client, setClient] = useState<ClientDetail | null>(null);
@@ -441,6 +449,9 @@ function ClientInspectorSubPanel({
   const [mockFeedback, setMockFeedback] = useState("");
   const [journalNote, setJournalNote] = useState("");
   const [msg, setMsg] = useState("");
+  const [genCount, setGenCount] = useState("5");
+  const [genBusy, setGenBusy] = useState(false);
+  const [openTipIds, setOpenTipIds] = useState<Record<number, boolean>>({});
 
   useEffect(() => setView(initialSubview || "overview"), [initialSubview, caseId]);
   useEffect(() => {
@@ -583,52 +594,153 @@ function ClientInspectorSubPanel({
       {view === "intake" && (
         <div className="space-y-3">
           <div className="g-card p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-white">AI-in-the-Loop Interactive Questionnaire</span>
-              <button
-                type="button"
-                onClick={async () => {
-                  await apiFetch(`/api/clients/${client.case_id}/questionnaire/generate`, {
-                    method: "POST",
-                    body: JSON.stringify({ focus: "live readiness & risk gaps" }),
-                  });
-                  await load();
-                  flash("Generated tailored follow-up questions on the fly!");
-                }}
-                className="g-btn-primary px-2.5 py-1 text-[11px] inline-flex items-center gap-1"
-              >
-                <Sparkles className="w-3 h-3" /> Generate Questions
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-white">
+                Interactive Questionnaire ({client.risk_flags.filter((f) => f.follow_up_question).length})
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {onImportQuestionnaireToChat && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      let payload = await apiFetch<ChatQuestionnairePayload>(`/api/clients/${client.case_id}/questionnaire`);
+                      if (payload.items.length === 0) {
+                        const gen = await apiFetch<{ questionnaire: ChatQuestionnairePayload }>(
+                          `/api/clients/${client.case_id}/questionnaire/generate`,
+                          { method: "POST", body: JSON.stringify({ count: 5, focus: "live readiness & risk gaps" }) }
+                        );
+                        payload = gen.questionnaire;
+                        await load();
+                      }
+                      onImportQuestionnaireToChat(payload);
+                      flash(`Imported ${payload.items.length} question(s) into chat!`);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/30 text-blue-200 text-[11px] font-medium inline-flex items-center gap-1 transition"
+                    title="Pop this exact questionnaire cleanly into the chat area"
+                  >
+                    <MessageSquarePlus className="w-3 h-3" /> Import into Chat
+                  </button>
+                )}
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={genCount}
+                  onChange={(e) => setGenCount(e.target.value)}
+                  className="w-14 bg-white/5 border border-white/10 rounded-lg px-1.5 py-1 text-[11px] text-center text-slate-200 outline-none"
+                  title="How many questions to generate (e.g. 5, 25, 100, 500)"
+                />
+                <button
+                  type="button"
+                  disabled={genBusy}
+                  onClick={async () => {
+                    const n = Math.max(1, Math.min(parseInt(genCount, 10) || 5, 1000));
+                    setGenBusy(true);
+                    try {
+                      await apiFetch(`/api/clients/${client.case_id}/questionnaire/generate`, {
+                        method: "POST",
+                        body: JSON.stringify({ count: n, focus: "live readiness & risk gaps" }),
+                      });
+                      await load();
+                      flash(`Generated ${n} tailored question(s)!`);
+                    } finally {
+                      setGenBusy(false);
+                    }
+                  }}
+                  className="g-btn-primary px-2.5 py-1 text-[11px] inline-flex items-center gap-1 disabled:opacity-40"
+                >
+                  <Sparkles className="w-3 h-3" /> {genBusy ? "Generating…" : "Generate"}
+                </button>
+              </div>
             </div>
-            {client.risk_flags
-              .filter((f) => f.follow_up_question)
-              .map((f) => (
-                <div key={f.id} className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold text-slate-200">{f.follow_up_question}</span>
-                    {f.resolved && <span className="text-[10px] text-emerald-400 font-bold shrink-0">Cleared</span>}
-                  </div>
-                  <div className="flex gap-1.5">
-                    <input
-                      className="g-input text-xs py-1 flex-1"
-                      defaultValue={f.client_response || ""}
-                      placeholder="Type truthful answer & press Enter..."
-                      onKeyDown={async (e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          const val = (e.target as HTMLInputElement).value;
-                          await apiFetch(`/api/clients/${client.case_id}/questionnaire`, {
-                            method: "POST",
-                            body: JSON.stringify({ flag_id: f.id, client_response: val, mark_resolved: isStaffOrCeo }),
-                          });
-                          await load();
-                          flash("Answer saved & Good Standing updated live!");
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
+
+            <div className="space-y-2 max-h-[380px] overflow-y-auto pr-0.5">
+              {client.risk_flags
+                .filter((f) => f.follow_up_question)
+                .map((f, fi) => {
+                  const tipOpen = Boolean(openTipIds[f.id]);
+                  const opts = f.options || [];
+                  return (
+                    <div key={f.id} className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-[11px] font-semibold text-slate-200 leading-snug">
+                          <span className="text-slate-500 font-mono mr-1">#{fi + 1}</span>
+                          {f.follow_up_question}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setOpenTipIds((prev) => ({ ...prev, [f.id]: !prev[f.id] }))}
+                            className={`p-1 rounded-md transition ${
+                              tipOpen ? "bg-amber-500/25 text-amber-200" : "text-amber-300/80 hover:bg-amber-500/15"
+                            }`}
+                            title="Tips & Explanation"
+                          >
+                            <Lightbulb className="w-3.5 h-3.5" />
+                          </button>
+                          {f.resolved && <span className="text-[10px] text-emerald-400 font-bold">Cleared</span>}
+                        </div>
+                      </div>
+
+                      {tipOpen && (
+                        <div className="p-2 rounded-lg bg-amber-500/[0.08] border border-amber-400/20 text-[11px] space-y-1">
+                          <div><b className="text-amber-300">Why:</b> <span className="text-slate-300">{f.detail}</span></div>
+                          {f.suggested_fix && (
+                            <div><b className="text-emerald-300">Tip:</b> <span className="text-slate-300">{f.suggested_fix}</span></div>
+                          )}
+                        </div>
+                      )}
+
+                      {opts.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {opts.map((opt, oi) => (
+                            <button
+                              key={oi}
+                              type="button"
+                              onClick={async () => {
+                                await apiFetch(`/api/clients/${client.case_id}/questionnaire`, {
+                                  method: "POST",
+                                  body: JSON.stringify({ flag_id: f.id, client_response: opt, mark_resolved: isStaffOrCeo }),
+                                });
+                                await load();
+                                flash("Choice saved & Good Standing updated live!");
+                              }}
+                              className={`px-2 py-0.5 rounded-lg text-[10px] border transition ${
+                                f.client_response === opt
+                                  ? "bg-blue-500/25 border-blue-400/50 text-white"
+                                  : "bg-white/[0.03] hover:bg-white/10 border-white/10 text-slate-300"
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex gap-1.5">
+                        <input
+                          className="g-input text-xs py-1 flex-1"
+                          defaultValue={f.client_response || ""}
+                          key={`${f.id}-${f.client_response}`}
+                          placeholder="Type truthful answer & press Enter..."
+                          onKeyDown={async (e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              const val = (e.target as HTMLInputElement).value;
+                              await apiFetch(`/api/clients/${client.case_id}/questionnaire`, {
+                                method: "POST",
+                                body: JSON.stringify({ flag_id: f.id, client_response: val, mark_resolved: isStaffOrCeo }),
+                              });
+                              await load();
+                              flash("Answer saved & Good Standing updated live!");
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
           </div>
 
           <form

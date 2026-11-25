@@ -55,6 +55,83 @@ class CreateConversationRequest(BaseModel):
 
 class GenerateQuestionsRequest(BaseModel):
     focus: str = ""
+    count: int = 5
+
+
+def _safe_options(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+        if isinstance(val, list):
+            return [str(x).strip() for x in val if str(x).strip()][:6]
+    except Exception:
+        pass
+    return []
+
+
+def _default_options_for_flag(f: RiskFlag) -> list[str]:
+    """Provide helpful multiple-choice options when a legacy RiskFlag has no saved options_json."""
+    existing = _safe_options(getattr(f, "options_json", "[]"))
+    if existing:
+        return existing
+    text = f"{f.title} {f.follow_up_question}".lower()
+    if "passport" in text:
+        return ["Valid > 6 months beyond travel", "Expires in under 6 months (need PICA renewal)", "Renewal currently in progress", "Not yet checked"]
+    if "ds-160" in text or "barcode" in text or "ais" in text:
+        return ["DS-160 AA-barcode matches AIS profile", "Need to update AIS profile barcode", "DS-160 not submitted yet", "Need staff verification"]
+    if "salary" in text or "gross" in text or "income" in text or "pay" in text:
+        return ["Matches monthly gross on payslips", "Listed net take-home instead of gross", "Self-employed / variable monthly income", "Need to verify with HR / payslips"]
+    if "refus" in text or "214" in text:
+        return ["Never refused a U.S. visa", "Refused once — circumstances improved", "Refused 2+ times — ready to disclose dates", "Unsure of prior refusal date"]
+    if "relative" in text or "family" in text:
+        return ["No relatives in the U.S.", "Immediate family in the U.S. (will disclose)", "Extended relatives only", "Need to confirm exact relationship/status"]
+    if "fund" in text or "bank" in text or "sponsor" in text:
+        return ["Self-funded from personal savings/salary", "Employer-funded business trip", "Immediate family / host sponsoring", "Shared funding (self + sponsor)"]
+    return ["Verified & matches documents", "Needs update on DS-160", "Need supporting document", "Will provide details below"]
+
+
+def _serialize_questionnaire_payload(c: ClientCase) -> dict[str, Any]:
+    """Serialize all follow-up questionnaire items for a client (used by both Side Panel and Chat Card)."""
+    items = []
+    for f in c.risk_flags:
+        if not (f.follow_up_question or "").strip():
+            continue
+        items.append(
+            {
+                "flag_id": f.id,
+                "code": f.code,
+                "title": f.title,
+                "question": f.follow_up_question,
+                "explanation": f.detail or "Helps verify truthful consistency for your DS-160 and U.S. Embassy Kingston interview.",
+                "tip": f.suggested_fix or "Answer truthfully and keep dates/amounts consistent with your supporting documents.",
+                "options": _default_options_for_flag(f),
+                "client_response": f.client_response or "",
+                "resolved": bool(f.resolved),
+                "severity": f.severity or "amber",
+                "source_citation": f.source_citation or "Consular Verification",
+            }
+        )
+    return {
+        "case_id": c.case_id,
+        "client_name": c.full_name or c.pseudonym,
+        "visa_class": c.visa_class,
+        "standing_score": c.standing_score,
+        "total_count": len(items),
+        "answered_count": sum(1 for i in items if i["client_response"].strip() or i["resolved"]),
+        "items": items,
+    }
+
+
+def _extract_requested_question_count(msg: str, default: int = 5) -> int:
+    """Extract requested count from phrases like 'generate 100 questions', 'give me 25 follow-up questions', '500 questions'."""
+    m = re.search(r"\b(\d{1,4})\s+(?:[a-z-]+\s+){0,3}(?:question|scenario|senario|item)", msg, re.I)
+    if not m:
+        m = re.search(r"(?:generate|genereate|prepare|create|make|give\s+me|add)\s+(\d{1,4})\b", msg, re.I)
+    if m:
+        n = int(m.group(1))
+        return max(1, min(n, 1000))
+    return default
 
 
 def _detect_case_id(db: Session, text: str, fallback: str | None) -> str | None:
@@ -293,6 +370,7 @@ def get_conversation_messages(
                 "created_assets": meta.get("created_assets", []) if isinstance(meta, dict) else [],
                 "panel": meta.get("panel") if isinstance(meta, dict) else None,
                 "pending_action": meta.get("pending_action") if isinstance(meta, dict) else None,
+                "questionnaire": meta.get("questionnaire") if isinstance(meta, dict) else None,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
         )
@@ -396,7 +474,164 @@ def cancel_pending_action(
     return _serialize_action(act)
 
 
-# ── AI-in-the-Loop Dynamic Questionnaire Generator ───────────────────────────
+# ── AI-in-the-Loop Dynamic Questionnaire Generator (Unlimited N Questions!) ──
+
+_CONSULAR_BANK_SEEDS: list[tuple[str, str, str, str, list[str]]] = [
+    ("Home Ties & Return Commitment", "What specific job duties, property ownership, or family commitments require your return to Jamaica immediately after your trip?", "Under INA 214(b), Kingston Consular Officers evaluate concrete social and economic ties to Jamaica.", "Give 2–3 concrete, verifiable ties (employer letter, children's school, property/lease, or ongoing business).", ["Full-time job with approved leave", "Business owner with active local clients", "Property / lease + dependent family in Jamaica", "University enrollment + family ties"]),
+    ("Trip Funding & Budget Alignment", "Who is paying for your flight, hotel, and daily expenses, and does your bank balance comfortably match that budget?", "Officers compare stated trip cost against monthly JMD salary and savings to ensure financial feasibility.", "Know your approximate USD budget and match it cleanly to your bank statements or sponsor's letter.", ["100% self-funded from personal salary/savings", "Employer-funded business travel", "Immediate family / host covering lodging", "Shared funding (self + sponsor)"]),
+    ("Gross vs. Net Monthly Income", "Does the monthly salary figure on your DS-160 reflect your monthly GROSS income in JMD before NIS/NHT/PAYE deductions?", "Form DS-160 asks for monthly gross income; confusing net take-home with gross causes unnecessary discrepancies.", "Bring your last 3 payslips and be ready to state both gross and net figures clearly.", ["Yes — DS-160 shows exact monthly gross JMD", "No — currently lists net take-home (will update)", "Self-employed (using average monthly revenue/draw)", "Unemployed / student / retired"]),
+    ("DS-160 & AIS Barcode Matching", "Have you confirmed that the AA-prefixed barcode on your printed DS-160 confirmation page exactly matches your AIS Kingston appointment profile?", "Effective April 1, 2025, U.S. Embassy Kingston denies entry if the DS-160 barcode does not match AIS.", "Check every character of your AA... code at ais.usvisa-info.com/en-jm/niv at least 48 hours before interview.", ["Confirmed exact AA-barcode match", "Need to update AIS profile with latest DS-160", "DS-160 draft not submitted yet", "Need staff double-check"]),
+    ("Jamaican Passport 6-Month Validity", "Is your Jamaican passport undamaged and valid for at least 6 months beyond your intended U.S. travel date?", "Both PICA and the U.S. Embassy require an undamaged passport with sufficient remaining validity.", "If under 6 months remaining, renew via PICA Simplified Adult Renewal Form 1 before scheduling.", ["Valid > 1 year beyond trip", "Valid 6–12 months beyond trip", "Under 6 months — need PICA renewal", "Damaged / full pages — replacing"]),
+    ("RGD Civil Documents 92% Rule", "Are your Jamaican RGD birth and/or marriage certificates original, and are photocopies reduced to 92% scale so serial numbers aren't clipped?", "Jamaican RGD certificates are longer than U.S. Letter paper; 100% copies often crop serial numbers.", "Bring original RGD certificates plus 92%-scaled photocopies showing the full header and serial number.", ["Originals + 92% copies ready", "Have originals, still need 92% copies", "Waiting on RGD replacement certificate", "Not applicable to this trip"]),
+    ("5-Year Employment & Education Timeline", "Have you listed every employer, self-employment period, and school attended over the past 5 years on your DS-160 with consistent dates?", "Gaps or conflicting dates between DS-160 and verbal answers trigger follow-up scrutiny.", "Review your exact start/end months and job titles before interview day.", ["Complete 5-year timeline verified", "Minor date gaps to clarify", "Multiple short-term / freelance roles", "Student / recent graduate"]),
+    ("Prior U.S. Visa Refusals Disclosure", "If you have ever been refused a U.S. visa or had an application placed in 221(g), have you disclosed every instance truthfully on DS-160?", "Consular records permanently show all prior U.S. applications; omission is far worse than a prior 214(b) refusal.", "Always disclose truthfully and focus on genuine, verifiable changes in your life since the prior application.", ["Never previously refused", "1 prior refusal — disclosed on DS-160", "2+ prior refusals — dates & reasons documented", "Prior 221(g) administrative processing"]),
+    ("U.S. Relatives & Host Transparency", "Do you have any immediate or extended relatives living in the United States, and do you know their exact immigration status and city?", "Officers routinely ask about U.S. family ties to verify DS-160 honesty and evaluate immigrant intent.", "Answer directly and accurately—never omit a sibling, parent, or spouse living in the U.S.", ["No relatives in the U.S.", "Immediate relatives in U.S. (disclosed)", "Extended relatives only (aunts/uncles/cousins)", "Staying with U.S. friend/host (not relative)"]),
+    ("Exact Travel Itinerary & Length of Stay", "What are your exact intended arrival and departure dates, cities visited, and why is that specific trip length appropriate for your job leave?", "Vague plans or unusually long B1/B2 stays (e.g., 3–6 months for a full-time worker) raise red flags.", "Keep your trip length realistic for your approved vacation leave and know where you will stay.", ["Short trip (4–10 days) matching approved leave", "2–3 week vacation with hotel/host itinerary", "Business conference / event with fixed dates", "Flexible dates — need to finalize itinerary"]),
+    ("International Travel History", "Which countries outside Jamaica have you visited in the past 5 years, and did you comply with every entry/exit deadline?", "Prior international travel with timely returns demonstrates strong travel compliance.", "Bring expired passports containing previous visas or entry/exit stamps.", ["Visited U.S. / UK / Canada / Schengen before", "Caribbean / regional travel only", "First international trip", "Prior visa stamps in expired passport"]),
+    ("DS-160 5-Year Social Media Accuracy", "Have you accurately listed all public social media handles used in the past 5 years on your DS-160?", "DS-160 requires disclosure of social media platforms used in the last 5 years.", "List your actual public usernames cleanly—do not delete accounts right before applying.", ["All 5-year handles listed accurately", "Use 1–2 platforms only (listed)", "No social media accounts used", "Need to review old handles before submitting"]),
+    ("Employment Leave Approval Verification", "Does your employer letter explicitly confirm your job title, tenure, gross salary, and approved return-to-work date?", "A detailed Jamaican employer letter on company letterhead strongly supports economic ties.", "Request a fresh letter dated within 30 days of your Kingston interview.", ["Employer letter ready with all 4 details", "Requested from HR — waiting", "Self-employed (TRN, TCC, company reg ready)", "Not employed (student/retired/dependent)"]),
+    ("Embassy Day Security & Logistics", "Do you have a plan for arriving at 142 Old Hope Road without cellphones, smartwatches, or large bags (no storage at Embassy)?", "U.S. Embassy Kingston prohibits electronic devices and large bags inside the compound with no on-site lockers.", "Leave your phone in a trusted vehicle or with a companion outside; bring documents in a clear folder.", ["Have a companion / vehicle plan ready", "Will leave electronics at home/hotel", "Need checklist of allowed items", "First time visiting Kingston Embassy"]),
+    ("Interview Photo Compliance", "Do you have one recent (within 6 months) 2×2 inch color photo on a plain white background with NO eyeglasses?", "Outdated photos or photos with glasses are rejected at the Embassy intake window.", "Take a fresh 2×2 white-background photo without glasses even if you wear them daily.", ["Fresh 2×2 no-glasses photo ready", "Need to take a new photo before interview", "Digital DS-160 upload matches print", "Unsure if photo meets 6-month rule"]),
+    ("Prior Overstay or Status Violation Check", "Have you ever stayed past your I-94 authorized stay or worked without authorization during any prior U.S. visit?", "Even short unauthorized stays or work on a B1/B2 visa affect eligibility under INA 222(g) or 212(a).", "Verify past I-94 arrival/departure records online at i94.cbp.dhs.gov before your interview.", ["No prior U.S. travel", "All prior U.S. visits departed on time", "Had a prior extension/delay (have receipts)", "Need to check I-94 history online"]),
+]
+
+_QUESTION_ANGLE_PREFIXES: list[tuple[str, str, str]] = [
+    ("Consular Interview Drill", "In a 20-second Kingston interview answer, how would you clearly explain:", "Officers make quick credibility assessments; concise, direct 1–2 sentence answers work best."),
+    ("Document Proof Check", "Which exact original document will you bring to verify:", "Bring supporting proof neatly organized in a clear folder, and only hand it over if asked."),
+    ("DS-160 Consistency Audit", "Does your DS-160 form match your spoken answer regarding:", "Any mismatch between your DS-160 submission and verbal interview response can trigger follow-up scrutiny."),
+    ("Follow-Up Officer Probe", "If the Consular Officer asks a sharp follow-up question probing:", "Stay calm, answer only what is asked truthfully, and avoid over-explaining or memorizing scripts."),
+    ("Scenario Readiness", "Suppose the officer questions whether your ties are strong enough on:", "Anchor your response in verifiable facts (dates, employers, family responsibilities, and finances)."),
+    ("Pre-Submission Verification", "Before locking in your Kingston appointment, have you double-checked:", "Catching small errors before submitting DS-160 avoids needing a new AA-barcode confirmation."),
+]
+
+
+def _generate_rich_question_batch(
+    db: Session,
+    c: ClientCase,
+    count: int,
+    focus: str,
+    existing_questions_lower: set[str],
+) -> tuple[list[dict[str, Any]], str]:
+    """Generate `count` unique rich questionnaire items (title, question, explanation, tip, options) — supports 1 to 1000+."""
+    results: list[dict[str, Any]] = []
+    seen = set(existing_questions_lower)
+    provider_used = "consular-bank"
+
+    # 1. Ask live LLM for bespoke case-tailored questions (up to 3 batches of 15 = up to 45 live LLM questions!)
+    llm_target = min(count, 45)
+    llm_batch_size = min(llm_target, 15)
+    max_llm_calls = 1 if count <= 15 else (2 if count <= 30 else 3)
+
+    for batch_idx in range(max_llm_calls):
+        remaining_llm = llm_target - len(results)
+        if remaining_llm <= 0:
+            break
+        ask_n = min(llm_batch_size, remaining_llm)
+        avoid_sample = list(seen)[:12]
+        llm_text, prov = call_llm(
+            db,
+            (
+                "You are a Jamaican U.S. Visa verification specialist. Return ONLY a valid JSON array of "
+                f"{ask_n} unique objects. Each object MUST have keys: "
+                "'title' (short 2-5 word topic), 'question' (clear question for the applicant), "
+                "'explanation' (1-2 sentence explanation of why U.S. Embassy Kingston / DS-160 cares), "
+                "'tip' (1 concise practical truthful tip), and 'options' (array of 3 to 4 realistic short multiple-choice answers). "
+                "Truthful preparation only; never coach concealment."
+            ),
+            (
+                f"Generate {ask_n} unique follow-up questionnaire items (batch {batch_idx + 1}).\n"
+                f"Case {c.case_id} ({c.full_name or c.pseudonym}), Visa={c.visa_class}, Occupation={c.occupation or 'Pending'}, "
+                f"Employer={c.employer_name or 'Pending'}, Gross JMD={c.monthly_gross_jmd}, Net JMD={c.monthly_net_jmd}, "
+                f"Destination={c.us_destination or 'Pending'}, Purpose={c.purpose_of_trip or 'Pending'}, "
+                f"Prior Refusals={c.prior_us_refusals}, US Relatives={c.us_relatives_details or 'None'}, "
+                f"Focus={focus or 'comprehensive Kingston Embassy & DS-160 readiness'}.\n"
+                f"Avoid duplicating these topics/questions: {json.dumps(avoid_sample)}"
+            ),
+        )
+        if prov and not prov.startswith(("error:", "none-configured")):
+            provider_used = prov
+        if not llm_text:
+            break
+        try:
+            m = re.search(r"\[[\s\S]*\]", llm_text)
+            if m:
+                parsed = json.loads(m.group(0))
+                if isinstance(parsed, list):
+                    for idx, item in enumerate(parsed, start=1):
+                        if not isinstance(item, dict):
+                            continue
+                        q = str(item.get("question") or "").strip()
+                        if not q or q.lower() in seen:
+                            continue
+                        seen.add(q.lower())
+                        opts = item.get("options") or item.get("choices") or []
+                        clean_opts = [str(o).strip() for o in opts if str(o).strip()][:5] if isinstance(opts, list) else []
+                        if not clean_opts:
+                            clean_opts = ["Verified & ready", "Need to update DS-160", "Need supporting document", "Will explain below"]
+                        results.append(
+                            {
+                                "title": str(item.get("title") or f"Verification Item #{len(results) + 1}").strip()[:120],
+                                "question": q,
+                                "explanation": str(item.get("explanation") or f"Tailored verification check ({focus or 'Kingston Embassy readiness'}).").strip(),
+                                "tip": str(item.get("tip") or "Answer truthfully and keep all dates and amounts consistent with your documents.").strip(),
+                                "options": clean_opts,
+                            }
+                        )
+                        if len(results) >= count:
+                            break
+        except Exception:
+            break
+
+    # 2. Fill remaining up to ANY requested count (e.g. 50, 100, 500) using structured Kingston Consular Bank + variations
+    if len(results) < count:
+        for title, q, exp, tip, opts in _CONSULAR_BANK_SEEDS:
+            if len(results) >= count:
+                break
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                results.append({"title": title, "question": q, "explanation": exp, "tip": tip, "options": opts})
+
+    round_num = 1
+    while len(results) < count:
+        for angle_title, prefix, angle_tip in _QUESTION_ANGLE_PREFIXES:
+            for base_title, base_q, base_exp, base_tip, base_opts in _CONSULAR_BANK_SEEDS:
+                if len(results) >= count:
+                    break
+                suffix = f" (Deep Check #{round_num})" if round_num > 1 else ""
+                variant_q = f"{prefix} {base_q[0].lower()}{base_q[1:]}" if round_num == 1 else f"[{angle_title} #{round_num}] {prefix} {base_q[0].lower()}{base_q[1:]}"
+                if variant_q.lower() in seen:
+                    continue
+                seen.add(variant_q.lower())
+                results.append(
+                    {
+                        "title": f"{base_title} — {angle_title}{suffix}"[:120],
+                        "question": variant_q,
+                        "explanation": f"{base_exp} (Focus: {focus or c.visa_class} readiness for {c.case_id}).",
+                        "tip": f"{angle_tip} {base_tip}",
+                        "options": base_opts,
+                    }
+                )
+            if len(results) >= count:
+                break
+        round_num += 1
+
+    return results[:count], provider_used
+
+
+@router.get("/clients/{case_id}/questionnaire")
+def get_client_questionnaire(
+    case_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the structured interactive questionnaire (with explanations, tips & multiple-choice options) for a case."""
+    c = db.query(ClientCase).filter(ClientCase.case_id == case_id.upper()).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    if user.role == "customer" and user.linked_case_id != c.case_id:
+        raise HTTPException(status_code=403, detail="Forbidden.")
+    return _serialize_questionnaire_payload(c)
+
 
 @router.post("/clients/{case_id}/questionnaire/generate")
 def generate_dynamic_questionnaire(
@@ -405,65 +640,48 @@ def generate_dynamic_questionnaire(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Generate tailored on-the-fly follow-up questions based on client gaps & risks, synced to Right Side Panel."""
+    """Generate `req.count` (1 to 1000+, infinitely repeatable) tailored questions with tips, explanations & multiple choice."""
     c = db.query(ClientCase).filter(ClientCase.case_id == case_id.upper()).first()
     if not c:
         raise HTTPException(status_code=404, detail="Case not found.")
     if user.role == "customer" and user.linked_case_id != c.case_id:
         raise HTTPException(status_code=403, detail="Forbidden.")
 
-    existing_codes = {f.code for f in c.risk_flags}
-    new_questions: list[tuple[str, str, str]] = []
+    req_count = max(1, min(int(req.count or 5), 1000))
+    existing_questions_lower = {(f.follow_up_question or "").strip().lower() for f in c.risk_flags if f.follow_up_question}
 
-    # Try active LLM first for bespoke follow-ups
-    llm_text, provider = call_llm(
-        db,
-        "You are a Jamaican U.S. Visa verification specialist. Return ONLY a JSON array of 3 objects with keys 'title' and 'question' for truthful DS-160 & Kingston Embassy interview readiness. Never coach concealment.",
-        f"Case {c.case_id}, Visa={c.visa_class}, Occupation={c.occupation}, Gross JMD={c.monthly_gross_jmd}, Net JMD={c.monthly_net_jmd}, "
-        f"Destination={c.us_destination}, Prior Refusals={c.prior_us_refusals}, US Relatives={c.us_relatives_details}, Focus={req.focus}",
-    )
-    if llm_text:
-        try:
-            m = re.search(r"\[[\s\S]*\]", llm_text)
-            if m:
-                parsed = json.loads(m.group(0))
-                for idx, item in enumerate(parsed[:4], start=1):
-                    q = str(item.get("question") or "").strip()
-                    t = str(item.get("title") or f"Dynamic Follow-Up #{idx}").strip()
-                    if q:
-                        new_questions.append((f"AI_DYN_{secrets.token_hex(2).upper()}", t, q))
-        except Exception:
-            pass
-
-    if not new_questions:
-        pool = [
-            ("AI_TIES_HOME", "Home Ties & Return Commitment", "What specific job duties, property, or family responsibilities require your return to Jamaica immediately after your U.S. visit?"),
-            ("AI_TRIP_FUNDING", "Trip Funding & Budget Alignment", "Who is paying for your flight, hotel, and daily expenses, and does your bank balance comfortably match that budget?"),
-            ("AI_SOCIAL_CHECK", "DS-160 5-Year Social Media & Employment Accuracy", "Have you listed every employer from the last 5 years and your public social media handles accurately for Form DS-160?"),
-        ]
-        if c.prior_us_refusals > 0:
-            pool.insert(0, ("AI_REFUSAL_CHANGE", "Changes Since Prior U.S. Refusal", "What genuine, verifiable changes in your employment, income, or family ties have occurred since your last U.S. visa refusal?"))
-        for code, title, q in pool:
-            if code not in existing_codes:
-                new_questions.append((code, title, q))
+    generated, provider = _generate_rich_question_batch(db, c, req_count, req.focus, existing_questions_lower)
 
     added = []
-    for code, title, q in new_questions[:3]:
+    for item in generated:
+        code = f"AI_DYN_{secrets.token_hex(3).upper()}"
         fl = RiskFlag(
             case_id=c.case_id,
             code=code,
             severity="amber",
             category="ai_questionnaire",
-            title=title,
-            detail=f"AI-generated verification question ({req.focus or 'live readiness check'}).",
-            suggested_fix="Record the client's truthful answer and verify against supporting documents.",
-            follow_up_question=q,
+            title=item["title"],
+            detail=item["explanation"],
+            suggested_fix=item["tip"],
+            follow_up_question=item["question"],
+            options_json=json.dumps(item["options"]),
             source_citation="Dynamic Consular Questionnaire",
             score_impact=0,
             resolved=False,
         )
         db.add(fl)
-        added.append({"code": code, "title": title, "question": q})
+        db.flush()
+        added.append(
+            {
+                "flag_id": fl.id,
+                "code": code,
+                "title": item["title"],
+                "question": item["question"],
+                "explanation": item["explanation"],
+                "tip": item["tip"],
+                "options": item["options"],
+            }
+        )
 
     db.add(
         PipelineJournal(
@@ -474,7 +692,14 @@ def generate_dynamic_questionnaire(
         )
     )
     db.commit()
-    return {"case_id": c.case_id, "provider_used": provider, "questions_added": added}
+    db.refresh(c)
+    return {
+        "case_id": c.case_id,
+        "provider_used": provider,
+        "count_requested": req_count,
+        "questions_added": added,
+        "questionnaire": _serialize_questionnaire_payload(c),
+    }
 
 
 # ── Direct Chat File Drop / Attachment ───────────────────────────────────────
@@ -557,6 +782,7 @@ def unified_agent_command(
     citations: list[dict[str, str]] = []
     created_assets: list[dict[str, Any]] = []
     pending_action_payload: dict[str, Any] | None = None
+    questionnaire_payload: dict[str, Any] | None = None
     reply = ""
     provider = "consular-ai-local"
 
@@ -565,16 +791,18 @@ def unified_agent_command(
         cid = user.linked_case_id or "C034"
         client = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
 
-        if any(k in low for k in ("generate question", "questionnaire", "ask me question")):
+        if _wants_questionnaire_generation(low) or any(k in low for k in ("questionnaire", "questionare", "ask me question")):
             if client:
-                q_res = generate_dynamic_questionnaire(cid, GenerateQuestionsRequest(focus=msg), user=user, db=db)
-                qs = q_res["questions_added"]
+                req_n = _extract_requested_question_count(msg, default=5)
+                if _wants_questionnaire_generation(low) or not any(f.follow_up_question for f in client.risk_flags):
+                    q_res = generate_dynamic_questionnaire(cid, GenerateQuestionsRequest(focus=msg, count=req_n), user=user, db=db)
+                    questionnaire_payload = q_res["questionnaire"]
+                    provider = q_res["provider_used"]
+                    reply = f"Generated **{len(q_res['questions_added'])} tailored question(s)** for your case (`{cid}`) — answer them interactively right here below (click the **Tips** icon on any question for guidance, or use the side panel)."
+                else:
+                    questionnaire_payload = _serialize_questionnaire_payload(client)
+                    reply = f"Loaded your **Interactive Questionnaire** (`{questionnaire_payload['total_count']}` questions) right here in chat. Click the **Tips** icon on any question for an explanation, pick a choice or type your answer, or generate more questions anytime."
                 ui_panel = {"panel": "customer_case", "case_id": cid, "subview": "intake", "title": "Interactive Questionnaire"}
-                reply = (
-                    "I generated tailored follow-up verification questions for your profile and opened your **Interactive Questionnaire** in the side panel:\n\n"
-                    + "\n".join(f"- **{q['title']}:** {q['question']}" for q in qs)
-                    + "\n\nAnswer them right here in chat or fill them in the side panel to update your Good Standing bar live."
-                )
         else:
             if any(k in low for k in ("my status", "good standing", "standing", "my case", "progress", "flag", "score")):
                 ui_panel = {"panel": "customer_case", "case_id": cid, "subview": "overview", "title": f"My Case Status ({cid})"}
@@ -606,12 +834,14 @@ def unified_agent_command(
             elif proposed.action_type == "update_branding":
                 ui_panel = {"panel": "settings", "title": "Settings & Branding"}
         elif target_cid and _wants_questionnaire_generation(low):
-            q_res = generate_dynamic_questionnaire(target_cid, GenerateQuestionsRequest(focus=msg), user=user, db=db)
+            req_n = _extract_requested_question_count(msg, default=5)
+            q_res = generate_dynamic_questionnaire(target_cid, GenerateQuestionsRequest(focus=msg, count=req_n), user=user, db=db)
             qs = q_res["questions_added"]
+            questionnaire_payload = q_res["questionnaire"]
             ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Questionnaire — {target_cid}"}
             reply = (
-                f"Generated **{len(qs)} dynamic follow-up questions** for **{target_cid}** and opened the interactive Questionnaire in the side panel:\n\n"
-                + "\n".join(f"- **{q['title']}:** {q['question']}" for q in qs)
+                f"Generated **{len(qs)} interactive question(s)** for **{target_cid}** (total in case: **{questionnaire_payload['total_count']}**) — "
+                "use the interactive card below with **Tips**, **Multiple Choice**, or custom answers, and generate as many more as you need anytime."
             )
             provider = q_res["provider_used"]
         else:
@@ -727,6 +957,14 @@ def unified_agent_command(
                     case_list = ", ".join(f"{c.case_id} ({c.full_name or c.pseudonym}, {c.standing_score}%)" for c in top_cases)
                     extra_parts.append(f"Recent Clients in Pipeline: {case_list}.")
 
+                # If user asked to show/open/import the questionnaire for a client, attach the interactive Chat Card!
+                if client and any(k in low for k in ("questionn", "questiona", "import question", "show question")):
+                    if not any(f.follow_up_question for f in client.risk_flags):
+                        q_res = generate_dynamic_questionnaire(client.case_id, GenerateQuestionsRequest(focus=msg, count=5), user=user, db=db)
+                        questionnaire_payload = q_res["questionnaire"]
+                    else:
+                        questionnaire_payload = _serialize_questionnaire_payload(client)
+
                 # For bare navigation commands when no LLM is connected, or if live AI answers directly:
                 res = answer_customer_question(
                     db,
@@ -767,6 +1005,7 @@ def unified_agent_command(
         "created_assets": created_assets,
         "panel": ui_panel,
         "pending_action": pending_action_payload,
+        "questionnaire": questionnaire_payload,
     }
     db.add(
         ChatMessage(
@@ -792,4 +1031,5 @@ def unified_agent_command(
         "created_assets": created_assets,
         "ui_panel": ui_panel,
         "pending_action": pending_action_payload,
+        "questionnaire": questionnaire_payload,
     }

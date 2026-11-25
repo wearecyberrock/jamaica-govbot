@@ -145,9 +145,13 @@ def test_full_backend_workflow():
         assert vc.status_code == 200
         assert vc.json()["engine"] == "edge"
 
-        dq = client.post("/api/clients/C034/questionnaire/generate", headers=staff_h, json={"focus": "ties"})
+        dq = client.post("/api/clients/C034/questionnaire/generate", headers=staff_h, json={"focus": "ties", "count": 25})
         assert dq.status_code == 200
-        assert len(dq.json()["questions_added"]) >= 1
+        assert len(dq.json()["questions_added"]) == 25
+        assert len(dq.json()["questionnaire"]["items"]) >= 25
+        assert len(dq.json()["questionnaire"]["items"][0]["options"]) >= 2
+        q_get = client.get("/api/clients/C034/questionnaire", headers=staff_h)
+        assert q_get.status_code == 200 and q_get.json()["total_count"] >= 25
 
         # CEO conversational edit -> Confirm -> Undo
         edit_cmd = client.post(

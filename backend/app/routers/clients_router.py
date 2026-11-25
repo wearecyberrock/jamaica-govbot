@@ -103,6 +103,7 @@ def serialize_client_detail(c: ClientCase, include_internal: bool = True) -> dic
                     "suggested_fix": f.suggested_fix,
                     "follow_up_question": f.follow_up_question,
                     "client_response": f.client_response,
+                    "options": _safe_json(getattr(f, "options_json", "[]"), []),
                     "source_citation": f.source_citation,
                     "source_url": f.source_url,
                     "score_impact": f.score_impact,
