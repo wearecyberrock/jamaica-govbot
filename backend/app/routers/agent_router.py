@@ -29,7 +29,12 @@ from app.models import (
     User,
 )
 from app.services.doc_generator import inspect_blueprint_file
-from app.services.hermes_engine import answer_customer_question, call_llm, run_staff_agent_loop
+from app.services.hermes_engine import (
+    answer_customer_question,
+    call_llm,
+    load_conversation_history,
+    run_staff_agent_loop,
+)
 from app.services.obsidian import sync_client_to_obsidian
 from app.services.risk_engine import evaluate_client_standing
 
@@ -505,6 +510,7 @@ def unified_agent_command(
             conv.title = msg[:44] + ("…" if len(msg) > 44 else "")
         conv.updated_at = datetime.now(timezone.utc)
 
+    history = load_conversation_history(db, conv_id, max_turns=10)
     db.add(ChatMessage(session_id=conv_id, case_id=req.case_id or user.linked_case_id, user_role=role, sender="user", content=msg))
 
     ui_panel: dict[str, Any] | None = None
@@ -542,7 +548,7 @@ def unified_agent_command(
             elif any(k in low for k in ("pica", "official", "embassy", "link", "source")):
                 ui_panel = {"panel": "gov_sources", "title": "Official U.S. Embassy & PICA Links"}
 
-            res = answer_customer_question(db, msg, client)
+            res = answer_customer_question(db, msg, client, conversation_id=conv_id, history=history)
             reply = res["reply"]
             citations = res.get("citations", [])
             provider = res["provider_used"]
@@ -621,7 +627,14 @@ def unified_agent_command(
                 ui_panel = {"panel": "client", "case_id": target_cid, "subview": sub, "title": f"Case {target_cid}"}
 
             if is_action_task:
-                res = run_staff_agent_loop(db, msg, case_id=target_cid, actor=f"Consular AI ({user.full_name})")
+                res = run_staff_agent_loop(
+                    db,
+                    msg,
+                    case_id=target_cid,
+                    actor=f"Consular AI ({user.full_name})",
+                    conversation_id=conv_id,
+                    history=history,
+                )
                 reply = res["reply"]
                 tool_trace = res.get("tool_trace", [])
                 provider = res["provider_used"]
@@ -692,7 +705,7 @@ def unified_agent_command(
                     reply = "Opened **Client Pipeline** (Active Clients separated cleanly from the 33 Historical Reference cases)."
                 else:
                     client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first() if target_cid else None
-                    res = answer_customer_question(db, msg, client)
+                    res = answer_customer_question(db, msg, client, conversation_id=conv_id, history=history)
                     reply = res["reply"]
                     citations = res.get("citations", [])
                     provider = res["provider_used"]

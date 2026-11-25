@@ -36,7 +36,7 @@ from app.services.connectors import (
     test_mcp_server_url,
     toggle_composio_app,
 )
-from app.services.hermes_engine import call_llm, detect_available_providers
+from app.services.hermes_engine import call_llm, call_llm_detailed, detect_available_providers
 from app.services.mcp_server import handle_mcp_jsonrpc
 
 router = APIRouter(tags=["ceo_and_settings"])
@@ -268,11 +268,24 @@ def test_ai_provider(
     _user: User = Depends(require_roles("ceo", "staff")),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    reply, prov = call_llm(db, "Reply with a single short sentence confirming connection.", "Confirm Jahtaria Visa Intelligence connection.")
+    res = call_llm_detailed(db, "Reply with a single short sentence confirming connection.", "Confirm Jahtaria Visa Intelligence connection.")
+    if res["text"]:
+        return {
+            "ok": True,
+            "provider_used": res["provider"],
+            "reply": res["text"],
+        }
+    if res["error"]:
+        return {
+            "ok": False,
+            "provider_used": res["provider"],
+            "error": res["error"],
+            "reply": f"Provider error ({res['provider']}): {res['error']}",
+        }
     return {
-        "ok": True,
-        "provider_used": prov,
-        "reply": reply or "Local Grounded Knowledge Engine active (connect Ollama, Antigravity agy CLI, or any API key to upgrade to live LLM reasoning).",
+        "ok": False,
+        "provider_used": res["provider"],
+        "reply": "No AI provider connected yet. Connect ChatGPT/Codex, Claude Pro/Max, Antigravity, Local Ollama, or an API key.",
     }
 
 

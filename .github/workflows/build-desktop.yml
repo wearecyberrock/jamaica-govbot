@@ -80,19 +80,18 @@ jobs:
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.0
-          name: "Jahtaria Visa Intelligence Desktop Suite v2.0.0 (Subscriptions, Voice, Dynamic AI Questionnaires & CEO Control)"
+          tag_name: v2.0.1
+          name: "Jahtaria Visa Intelligence Desktop Suite v2.0.1 (Live ChatGPT Codex SSE, Windows Antigravity & Multi-Turn Memory)"
           body: |
-            ## Jahtaria Visa Intelligence — v2.0.0 (Setup.exe)
+            ## Jahtaria Visa Intelligence — v2.0.1 (Setup.exe)
 
-            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Setup-2.0.0.exe`**.
+            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Setup-2.0.1.exe`**.
 
-            ### What's New in v2.0.0
-            - **Real 1-Click Subscription Sign-Ins (No Internal Engine Branding):** Sign in directly with **ChatGPT / OpenAI Codex Subscription** (device OAuth), **Claude Pro / Max Subscription** (`setup-token` / local auto-detect), **Antigravity (Google OAuth)**, plus grouped Model Picker for Ollama, Grok, Gemini, OpenAI, Anthropic, Qwen, MiniMax & OpenRouter.
-            - **Full Voice Mode for CEO, Staff & Clients:** Built-in FREE Microsoft Edge Neural voices (`Visa Advisor` + `U.S. Embassy Officer` for live voice mock interviews!), optional **ElevenLabs Flash API** & **Fish Audio**, plus **Mic Speech-to-Text** right in the chat pill.
-            - **AI-in-the-Loop Dynamic Questionnaires:** Generate tailored follow-up questions on the fly in chat & the interactive Right Side Panel with live Good Standing updates.
-            - **CEO Full Conversational Edit Control:** Edit client records, documents, and agency branding right from chat with **1-Click Confirm & Undo** cards.
-            - **Saved Multi-Conversation Sidebar + Clean Active Clients + Drag-and-Drop PDF/Image Uploads + 1-Click MCP Config Export**.
+            ### What's Fixed in v2.0.1
+            - **Live ChatGPT / OpenAI Codex OAuth Streaming:** Fixed `openai-codex` to stream via SSE (`response.output_text.delta` / `response.completed`), send the `chatgpt-account-id` JWT claim header, and auto-refresh expired OAuth tokens.
+            - **Windows Antigravity Support:** Auto-detects `agy.exe` / `agy.cmd` across Windows paths (with Google OAuth endpoint fallback).
+            - **Full Multi-Turn Conversation Memory:** Passes the last 10 turns from `ChatMessage` into every AI provider so chat remembers context naturally.
+            - **Transparent Provider Diagnostics:** Never silently falls back to the canned Kingston Embassy blurb when a connected subscription fails — surfaces exact HTTP status/errors clearly in chat, and prompts conversationally to connect a provider when none is configured.
           files: desktop/dist/*.exe
           draft: false
           prerelease: false

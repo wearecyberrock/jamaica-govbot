@@ -371,20 +371,31 @@ def import_local_subscription_tokens(db: Session) -> dict[str, Any]:
         except Exception:
             pass
 
-    # Antigravity CLI (~/.gemini/antigravity-cli/antigravity-oauth-token)
-    agy_cred = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    if agy_cred.exists():
-        try:
-            data = json.loads(agy_cred.read_text(encoding="utf-8"))
-            tok = (data.get("token") or {}).get("access_token") or ""
-            ref = (data.get("token") or {}).get("refresh_token") or ""
-            if tok:
-                set_setting(db, "antigravity_access_token", tok, is_secret=True, category="oauth")
-                if ref:
-                    set_setting(db, "antigravity_refresh_token", ref, is_secret=True, category="oauth")
-                imported.append("antigravity")
-        except Exception:
-            pass
+    # Antigravity CLI (~/.gemini/antigravity-cli/antigravity-oauth-token, ~/.gemini/oauth_creds.json, or local agy binary)
+    from app.services.hermes_engine import find_antigravity_bin
+
+    agy_imported = False
+    for agy_cred in (
+        Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token",
+        Path.home() / ".gemini" / "oauth_creds.json",
+    ):
+        if agy_cred.exists():
+            try:
+                data = json.loads(agy_cred.read_text(encoding="utf-8"))
+                tok_obj = data.get("token") if isinstance(data.get("token"), dict) else data
+                tok = (tok_obj.get("access_token") or "").strip()
+                ref = (tok_obj.get("refresh_token") or "").strip()
+                if tok:
+                    set_setting(db, "antigravity_access_token", tok, is_secret=True, category="oauth")
+                    if ref:
+                        set_setting(db, "antigravity_refresh_token", ref, is_secret=True, category="oauth")
+                    imported.append("antigravity")
+                    agy_imported = True
+                    break
+            except Exception:
+                pass
+    if not agy_imported and find_antigravity_bin():
+        imported.append("antigravity")
 
     return {"imported": imported, "count": len(imported)}
 
@@ -392,12 +403,20 @@ def import_local_subscription_tokens(db: Session) -> dict[str, Any]:
 # ── 4. Grouped Model Picker Catalog (No "Hermes" Mentioned Anywhere!) ────────
 
 def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
+    from app.services.hermes_engine import find_antigravity_bin
+
     active_provider = get_setting(db, "ai_provider", "auto")
     active_model = get_setting(db, "ai_model", "consular-auto")
 
+    agy_bin = find_antigravity_bin()
     codex_connected = bool(get_setting(db, "codex_access_token", ""))
     claude_sub_connected = bool(get_setting(db, "claude_oauth_token", "")) or bool(os.getenv("CLAUDE_CODE_OAUTH_TOKEN"))
-    agy_connected = bool(get_setting(db, "antigravity_access_token", "")) or (Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
+    agy_connected = (
+        bool(get_setting(db, "antigravity_access_token", ""))
+        or (Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
+        or (Path.home() / ".gemini" / "oauth_creds.json").exists()
+        or bool(agy_bin)
+    )
 
     ollama_url = get_setting(db, "ollama_base_url", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     ollama_models: list[str] = []
@@ -468,7 +487,7 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
             "items": [
                 {"provider": "openai", "label": "OpenAI API", "connected": has_openai, "auth_kind": "api_key", "models": ["gpt-4o", "gpt-4o-mini", "o3-mini"]},
                 {"provider": "anthropic", "label": "Anthropic Claude API", "connected": has_anthropic, "auth_kind": "api_key", "models": ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"]},
-                {"provider": "gemini", "label": "Google Gemini API", "connected": has_gemini, "auth_kind": "api_key", "models": ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]},
+                {"provider": "gemini", "label": "Google Gemini API", "connected": has_gemini, "auth_kind": "api_key", "models": ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview"]},
                 {"provider": "xai_grok", "label": "xAI Grok (SuperGrok / API)", "connected": has_xai, "auth_kind": "api_key", "models": ["grok-3", "grok-2-latest"]},
                 {"provider": "openrouter", "label": "OpenRouter (All Models)", "connected": has_openrouter, "auth_kind": "api_key", "models": ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "x-ai/grok-2"]},
                 {"provider": "qwen", "label": "Qwen (DashScope / OAuth)", "connected": has_qwen, "auth_kind": "api_key", "models": ["qwen-max", "qwen-plus"]},
@@ -480,7 +499,7 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
     return {
         "active_provider": active_provider,
         "active_model": active_model,
-        "agy_cli_installed": bool(shutil.which("agy")),
+        "agy_cli_installed": bool(agy_bin),
         "claude_cli_installed": bool(shutil.which("claude")),
         "groups": groups,
     }

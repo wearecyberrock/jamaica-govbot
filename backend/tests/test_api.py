@@ -11,6 +11,17 @@ from pathlib import Path
 _TMP_DIR = tempfile.mkdtemp(prefix="jahtaria_test_")
 os.environ["DATA_DIR"] = _TMP_DIR
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TMP_DIR, 'test.db').as_posix()}"
+for _env_key in (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "QWEN_API_KEY",
+    "MINIMAX_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+):
+    os.environ.pop(_env_key, None)
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -163,3 +174,70 @@ def test_full_backend_workflow():
         mcp_list = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         assert mcp_list.status_code == 200
         assert any(t["name"] == "jahtaria_audit_client" for t in mcp_list.json()["result"]["tools"])
+
+
+def test_ai_engine_fixes_sse_errors_and_history(monkeypatch):
+    """Verify Codex JWT claim extraction, SSE streaming parser, error transparency, conversational greeting, and history."""
+    import base64
+    import json
+
+    from app.database import SessionLocal
+    from app.services import hermes_engine
+    from app.services.connectors import set_setting
+
+    # 1. JWT chatgpt-account-id claim extraction
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"https://api.openai.com/auth": {"chatgpt_account_id": "acct_test_123"}}).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    fake_jwt = f"eyJhbGciOiJSUzI1NiJ9.{payload}.sig"
+    assert hermes_engine._extract_chatgpt_account_id(fake_jwt) == "acct_test_123"
+
+    # 2. Conversational greeting when NO provider is configured (must NOT dump canned 3-source Embassy blurb)
+    db = SessionLocal()
+    try:
+        set_setting(db, "ai_provider", "auto", is_secret=False, category="ai")
+        set_setting(db, "codex_access_token", "", is_secret=True, category="oauth")
+        set_setting(db, "claude_oauth_token", "", is_secret=True, category="oauth")
+        set_setting(db, "antigravity_access_token", "", is_secret=True, category="oauth")
+
+        greet = hermes_engine.answer_customer_question(db, "hi there")
+        assert "Here is verified guidance based on official U.S. Embassy Kingston" not in greet["reply"]
+        assert "ChatGPT" in greet["reply"] and "Claude" in greet["reply"] and "Ollama" in greet["reply"]
+        assert greet["provider_used"] == "none-configured"
+
+        # 3. Connected provider HTTP error must NEVER be silently swallowed
+        set_setting(db, "ai_provider", "openai-codex", is_secret=False, category="ai")
+        set_setting(db, "codex_access_token", fake_jwt, is_secret=True, category="oauth")
+
+        def fake_codex_fail(token, model, system_prompt, history, user_prompt):
+            return None, 401, "Session expired — please re-authenticate"
+
+        monkeypatch.setattr(hermes_engine, "_call_openai_codex_sse", fake_codex_fail)
+        err_res = hermes_engine.answer_customer_question(db, "hi")
+        assert "HTTP 401" in err_res["reply"]
+        assert "Session expired" in err_res["reply"]
+        assert "Here is verified guidance" not in err_res["reply"]
+
+        # 4. Connected provider receives full conversation history
+        captured = {}
+
+        def fake_codex_ok(token, model, system_prompt, history, user_prompt):
+            captured["history"] = history
+            captured["user_prompt"] = user_prompt
+            return "Hello Shakir! I remember our earlier turn.", 200, None
+
+        monkeypatch.setattr(hermes_engine, "_call_openai_codex_sse", fake_codex_ok)
+        prior_turns = [
+            {"role": "user", "content": "My name is Shakir."},
+            {"role": "assistant", "content": "Nice to meet you, Shakir!"},
+        ]
+        ok_res = hermes_engine.answer_customer_question(db, "What is my name?", history=prior_turns)
+        assert ok_res["reply"] == "Hello Shakir! I remember our earlier turn."
+        assert ok_res["provider_used"].startswith("chatgpt-codex:")
+        assert captured["history"] == prior_turns
+        assert captured["user_prompt"] == "What is my name?"
+    finally:
+        # Clean up test settings
+        set_setting(db, "ai_provider", "auto", is_secret=False, category="ai")
+        set_setting(db, "codex_access_token", "", is_secret=True, category="oauth")
+        db.close()

@@ -38,7 +38,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title=f"{APP_NAME} — Visa Intelligence & Document Automation API",
-    version="2.0.0",
+    version="2.0.1",
     lifespan=lifespan,
 )
 
