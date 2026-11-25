@@ -5,8 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dist:win": "electron-builder --win nsis",
     "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux"
   },
   "dependencies": {},
@@ -17,14 +17,48 @@
   "build": {
     "appId": "com.cyberrock.jahtaria.visasuite",
     "productName": "Jahtaria Visa Intelligence",
+    "artifactName": "Jahtaria-Visa-Intelligence-Setup-${version}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "extraResources": [
+      {
+        "from": "resources/backend",
+        "to": "backend"
+      },
+      {
+        "from": "resources/webui",
+        "to": "webui"
+      },
+      {
+        "from": "resources/seed-data",
+        "to": "seed-data"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Jahtaria Visa Intelligence",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    },
     "mac": {
       "category": "public.app-category.business",
       "icon": "build/icon.png",
-      "target": ["dmg", "zip"]
-    },
-    "win": {
-      "icon": "build/icon.png",
-      "target": ["nsis"]
+      "target": ["dmg"]
     },
     "linux": {
       "icon": "build/icon.png",

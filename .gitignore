@@ -5,12 +5,16 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Node / Next.js / Electron
+# Node / Next.js / Electron / PyInstaller
 node_modules/
 frontend/.next/
 frontend/out/
 desktop/dist/
 desktop/release/
+desktop/resources/
+backend/build/
+backend/dist/
+*.spec
 
 # Local runtime DB & secrets (keep seeded official_pdfs, seed_package, jahtaria-logo.png!)
 .env

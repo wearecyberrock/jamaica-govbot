@@ -1,4 +1,4 @@
-"""Application configuration, directory paths, and Fernet encryption helpers."""
+"""Application configuration, packaged desktop resource bootstrap, and Fernet encryption helpers."""
 
 from __future__ import annotations
 
@@ -6,15 +6,23 @@ import base64
 import hashlib
 import os
 import secrets
+import shutil
+import sys
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
+IS_FROZEN = getattr(sys, "frozen", False)
+ROOT_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT_DIR / "data"))).resolve()
+BUNDLED_DATA_DIR = Path(os.getenv("BUNDLED_DATA_DIR", str(ROOT_DIR / "data"))).resolve()
+
+_env_static = os.getenv("STATIC_FRONTEND_DIR", "").strip()
+STATIC_FRONTEND_DIR: Path | None = Path(_env_static).resolve() if _env_static else (ROOT_DIR / "frontend" / "out")
+
 SEED_PACKAGE_DIR = DATA_DIR / "seed_package"
 OFFICIAL_PDFS_DIR = DATA_DIR / "official_pdfs"
 BLUEPRINTS_DIR = DATA_DIR / "blueprints"
@@ -22,8 +30,32 @@ GENERATED_DIR = DATA_DIR / "generated"
 OBSIDIAN_VAULT_DIR = DATA_DIR / "obsidian-vault"
 LOGO_PATH = DATA_DIR / "jahtaria-logo.png"
 
-for _d in (DATA_DIR, OFFICIAL_PDFS_DIR, BLUEPRINTS_DIR, GENERATED_DIR, OBSIDIAN_VAULT_DIR):
+for _d in (DATA_DIR, SEED_PACKAGE_DIR, OFFICIAL_PDFS_DIR, BLUEPRINTS_DIR, GENERATED_DIR, OBSIDIAN_VAULT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+
+
+def bootstrap_bundled_data() -> None:
+    """Copy bundled seed_package, official_pdfs, and logo into writable user DATA_DIR on first desktop run."""
+    if BUNDLED_DATA_DIR == DATA_DIR or not BUNDLED_DATA_DIR.exists():
+        return
+
+    for sub in ("seed_package", "official_pdfs"):
+        src_dir = BUNDLED_DATA_DIR / sub
+        dst_dir = DATA_DIR / sub
+        if src_dir.exists():
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for item in src_dir.iterdir():
+                if item.is_file():
+                    target = dst_dir / item.name
+                    if not target.exists():
+                        shutil.copy2(item, target)
+
+    src_logo = BUNDLED_DATA_DIR / "jahtaria-logo.png"
+    if src_logo.exists() and not LOGO_PATH.exists():
+        shutil.copy2(src_logo, LOGO_PATH)
+
+
+bootstrap_bundled_data()
 
 
 def _load_or_create_secret() -> str:

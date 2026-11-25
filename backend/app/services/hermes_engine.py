@@ -142,37 +142,89 @@ def call_llm(db: Session, system_prompt: str, user_prompt: str) -> tuple[str | N
             if provider == "ollama":
                 return None, "ollama_unreachable"
 
-    # 3. Cloud API Keys via LiteLLM (OpenAI, Anthropic, Gemini, xAI Grok, OpenRouter)
-    key_map = [
-        ("openai", "openai_api_key", "OPENAI_API_KEY", model or "gpt-4o-mini"),
-        ("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY", model or "claude-3-5-sonnet-latest"),
-        ("gemini", "gemini_api_key", "GEMINI_API_KEY", model or "gemini/gemini-2.0-flash"),
-        ("xai_grok", "xai_api_key", "XAI_API_KEY", model or "xai/grok-2-latest"),
-        ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY", model or "openrouter/openai/gpt-4o-mini"),
+    # 3. Cloud API Keys (OpenAI, Anthropic, Gemini, xAI Grok, OpenRouter) — direct httpx (works cleanly in Setup.exe!)
+    openai_compat = [
+        ("openai", "openai_api_key", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions", model or "gpt-4o-mini"),
+        ("xai_grok", "xai_api_key", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions", model or "grok-2-latest"),
+        ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/chat/completions", model or "openai/gpt-4o-mini"),
     ]
-    for prov_id, setting_key, env_key, default_model in key_map:
+    for prov_id, setting_key, env_key, endpoint, default_model in openai_compat:
         if provider not in ("auto", prov_id):
             continue
         api_key = get_setting(db, setting_key, os.getenv(env_key, ""))
         if not api_key:
             continue
         try:
-            import litellm
-
-            resp = litellm.completion(
-                model=default_model,
-                api_key=api_key,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                timeout=30,
-            )
-            txt = resp.choices[0].message.content
-            if txt:
-                return txt.strip(), f"litellm:{prov_id}"
+            with httpx.Client(timeout=30.0) as client:
+                r = client.post(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": default_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                    },
+                )
+                if r.status_code == 200:
+                    txt = r.json()["choices"][0]["message"]["content"]
+                    if txt:
+                        return txt.strip(), f"{prov_id}:{default_model}"
         except Exception:
             continue
+
+    # Anthropic Claude Messages API
+    if provider in ("auto", "anthropic"):
+        anth_key = get_setting(db, "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", ""))
+        if anth_key:
+            anth_model = model if model.startswith("claude") else "claude-3-5-sonnet-latest"
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    r = client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": anth_key,
+                            "anthropic-version": "2023-06-01",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": anth_model,
+                            "max_tokens": 1200,
+                            "system": system_prompt,
+                            "messages": [{"role": "user", "content": user_prompt}],
+                        },
+                    )
+                    if r.status_code == 200:
+                        blocks = r.json().get("content", [])
+                        txt = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                        if txt.strip():
+                            return txt.strip(), f"anthropic:{anth_model}"
+            except Exception:
+                pass
+
+    # Google Gemini API
+    if provider in ("auto", "gemini"):
+        gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
+        if gem_key:
+            gem_model = model.replace("gemini/", "") if "gemini" in model else "gemini-2.0-flash"
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    r = client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{gem_model}:generateContent?key={gem_key}",
+                        json={
+                            "systemInstruction": {"parts": [{"text": system_prompt}]},
+                            "contents": [{"parts": [{"text": user_prompt}]}],
+                        },
+                    )
+                    if r.status_code == 200:
+                        cands = r.json().get("candidates", [])
+                        if cands:
+                            txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", []))
+                            if txt.strip():
+                                return txt.strip(), f"gemini:{gem_model}"
+            except Exception:
+                pass
 
     return None, "hermes-local-knowledge"
 
