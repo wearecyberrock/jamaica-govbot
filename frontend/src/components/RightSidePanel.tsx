@@ -21,6 +21,7 @@ import {
   Lightbulb,
   MessageSquarePlus,
   Maximize2,
+  Minimize2,
   ArrowUpDown,
   FileSpreadsheet,
   FolderOpen,
@@ -71,6 +72,9 @@ interface RightSidePanelProps {
   branding: BrandingConfig | null;
   recentLinks: PanelRequest[];
   refreshNonce?: number;
+  panelWidth?: number;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
   onNavigatePanel: (req: PanelRequest) => void;
   onSelectCaseForChat: (caseId: string) => void;
   onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
@@ -85,6 +89,9 @@ export function RightSidePanel({
   branding,
   recentLinks,
   refreshNonce = 0,
+  panelWidth,
+  isExpanded = false,
+  onToggleExpand,
   onNavigatePanel,
   onSelectCaseForChat,
   onImportQuestionnaireToChat,
@@ -96,7 +103,16 @@ export function RightSidePanel({
   const isStaffOrCeo = user.role === "ceo" || user.role === "staff";
 
   return (
-    <aside className="w-full lg:w-[48%] xl:w-[46%] max-w-[680px] h-full bg-[#111318] border-l border-white/10 flex flex-col shrink-0">
+    <aside
+      style={isExpanded ? undefined : panelWidth ? { width: `${panelWidth}px` } : undefined}
+      className={`${
+        isExpanded
+          ? "fixed inset-0 z-40 w-screen h-screen"
+          : panelWidth
+          ? "max-w-[85vw] h-full shrink-0"
+          : "w-full lg:w-[48%] xl:w-[46%] max-w-[680px] h-full shrink-0"
+      } bg-[#111318] border-l border-white/10 flex flex-col`}
+    >
       {/* Top Panel Bar */}
       <div className="h-12 px-4 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -105,13 +121,24 @@ export function RightSidePanel({
             {request.title || request.panel.replace(/_/g, " ").toUpperCase()}
           </span>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition"
-          title="Close Side Panel"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {onToggleExpand && (
+            <button
+              onClick={onToggleExpand}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition"
+              title={isExpanded ? "Restore Side Panel Width" : "Expand Side Panel Full Screen"}
+            >
+              {isExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition"
+            title="Close Side Panel"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Recent Opened Artifacts Strip (like image_2.png Links / Files) */}

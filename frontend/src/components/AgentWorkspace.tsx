@@ -85,10 +85,57 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   const [user, setUser] = useState<UserAccount | null>(null);
   const [branding, setBranding] = useState<BrandingConfig | null>(null);
 
-  // Sidebars & panels
+  // Sidebars & panels (with persistent drag-to-resize widths!)
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [leftWidth, setLeftWidth] = useState(244);
+  const [rightWidth, setRightWidth] = useState(560);
+  const [rightExpanded, setRightExpanded] = useState(false);
+  const [resizingSide, setResizingSide] = useState<"left" | "right" | null>(null);
   const [rightPanel, setRightPanel] = useState<PanelRequest | null>(null);
   const [recentPanels, setRecentPanels] = useState<PanelRequest[]>([]);
+
+  useEffect(() => {
+    try {
+      const lw = Number(localStorage.getItem("jahtaria_left_width"));
+      const rw = Number(localStorage.getItem("jahtaria_right_width"));
+      if (lw >= 180 && lw <= 460) setLeftWidth(lw);
+      if (rw >= 320 && rw <= 1400) setRightWidth(rw);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!resizingSide) return;
+    const onMove = (e: MouseEvent) => {
+      if (resizingSide === "left") {
+        const next = Math.max(180, Math.min(460, e.clientX));
+        setLeftWidth(next);
+        try {
+          localStorage.setItem("jahtaria_left_width", String(next));
+        } catch {
+          // ignore
+        }
+      } else if (resizingSide === "right") {
+        const maxW = Math.max(420, window.innerWidth - (sidebarOpen ? leftWidth : 56) - 280);
+        const next = Math.max(320, Math.min(maxW, window.innerWidth - e.clientX));
+        setRightExpanded(false);
+        setRightWidth(next);
+        try {
+          localStorage.setItem("jahtaria_right_width", String(next));
+        } catch {
+          // ignore
+        }
+      }
+    };
+    const onUp = () => setResizingSide(null);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizingSide, leftWidth, sidebarOpen]);
 
   // Saved multi-conversation history + clean Active Clients list
   const [conversations, setConversations] = useState<SavedConv[]>([]);
@@ -461,11 +508,15 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         }}
       />
 
-      {/* ── LEFT GRAPHITE SIDEBAR (Clean Conversations + Active Clients Only!) ─ */}
+      {/* Transparent Drag Overlay so PDF iframes never swallow mousemove while resizing */}
+      {resizingSide && <div className="fixed inset-0 z-50 cursor-col-resize select-none" />}
+
+      {/* ── LEFT GRAPHITE SIDEBAR (Drag-Resizable!) ─ */}
       <aside
-        className={`${
-          sidebarOpen ? "w-60" : "w-14"
-        } h-full bg-[#111318] border-r border-white/10 flex flex-col transition-all duration-200 shrink-0`}
+        style={{ width: sidebarOpen ? `${leftWidth}px` : "56px" }}
+        className={`h-full bg-[#111318] border-r border-white/10 flex flex-col shrink-0 relative ${
+          resizingSide ? "" : "transition-[width] duration-150"
+        }`}
       >
         <div className="h-12 px-3 flex items-center justify-between border-b border-white/5">
           {sidebarOpen ? (
@@ -605,6 +656,30 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           </div>
         </div>
       </aside>
+
+      {/* Left Sidebar Drag-to-Resize Handle */}
+      {sidebarOpen && (
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setResizingSide("left");
+          }}
+          onDoubleClick={() => {
+            setLeftWidth(244);
+            try {
+              localStorage.setItem("jahtaria_left_width", "244");
+            } catch {
+              // ignore
+            }
+          }}
+          title="Drag to resize left sidebar (double-click to reset)"
+          className={`w-1.5 h-full cursor-col-resize shrink-0 group relative z-20 transition-colors ${
+            resizingSide === "left" ? "bg-blue-500/70" : "bg-transparent hover:bg-blue-400/40"
+          }`}
+        >
+          <div className="absolute inset-y-1/2 -translate-y-1/2 left-0.5 w-0.5 h-10 rounded-full bg-white/15 group-hover:bg-blue-300" />
+        </div>
+      )}
 
       {/* ── CENTER CHATBOT-FIRST CANVAS ───────────────────────────────────── */}
       <div className={`flex-1 flex flex-col min-w-0 graphite-ambient relative ${dragActive ? "ring-2 ring-blue-400 ring-inset" : ""}`}>
@@ -1027,37 +1102,64 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         )}
       </div>
 
-      {/* ── RIGHT COLLAPSIBLE ARTIFACT SIDE PANEL ─────────────────────────── */}
+      {/* ── RIGHT COLLAPSIBLE & DRAG-RESIZABLE ARTIFACT SIDE PANEL ───────── */}
       {rightPanel && (
-        <RightSidePanel
-          request={rightPanel}
-          user={user}
-          branding={branding}
-          recentLinks={recentPanels}
-          refreshNonce={panelRefreshNonce}
-          onNavigatePanel={openPanel}
-          onSelectCaseForChat={(cid) => setActiveCaseId(cid)}
-          onOpenStudio={(target) => setStudioTarget(target)}
-          onImportQuestionnaireToChat={(payload) => {
-            setActiveCaseId(payload.case_id);
-            setTurns((prev) => [
-              ...prev,
-              {
-                sender: "assistant",
-                content: `Imported **${payload.case_id} — ${payload.client_name}** questionnaire (**${payload.total_count} questions**) into chat. Click **Tips** on any question for an explanation, pick a choice or type your answer, or click **+ Add More** to generate any number of additional questions.`,
-                questionnaire: payload,
-              },
-            ]);
-          }}
-          onBrandingUpdated={(b) => {
-            setBranding(b);
-            loadModelCatalog();
-          }}
-          onClose={() => {
-            setRightPanel(null);
-            loadModelCatalog();
-          }}
-        />
+        <>
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setResizingSide("right");
+            }}
+            onDoubleClick={() => {
+              setRightExpanded(false);
+              setRightWidth(560);
+              try {
+                localStorage.setItem("jahtaria_right_width", "560");
+              } catch {
+                // ignore
+              }
+            }}
+            title="Drag to resize right panel (double-click to reset)"
+            className={`w-1.5 h-full cursor-col-resize shrink-0 group relative z-20 transition-colors ${
+              resizingSide === "right" ? "bg-blue-500/70" : "bg-transparent hover:bg-blue-400/40"
+            }`}
+          >
+            <div className="absolute inset-y-1/2 -translate-y-1/2 left-0.5 w-0.5 h-10 rounded-full bg-white/15 group-hover:bg-blue-300" />
+          </div>
+          <RightSidePanel
+            request={rightPanel}
+            user={user}
+            branding={branding}
+            recentLinks={recentPanels}
+            refreshNonce={panelRefreshNonce}
+            panelWidth={rightExpanded ? undefined : rightWidth}
+            isExpanded={rightExpanded}
+            onToggleExpand={() => setRightExpanded((v) => !v)}
+            onNavigatePanel={openPanel}
+            onSelectCaseForChat={(cid) => setActiveCaseId(cid)}
+            onOpenStudio={(target) => setStudioTarget(target)}
+            onImportQuestionnaireToChat={(payload) => {
+              setActiveCaseId(payload.case_id);
+              setTurns((prev) => [
+                ...prev,
+                {
+                  sender: "assistant",
+                  content: `Imported **${payload.case_id} — ${payload.client_name}** questionnaire (**${payload.total_count} questions**) into chat. Click **Tips** on any question for an explanation, pick a choice or type your answer, or click **+ Add More** to generate any number of additional questions.`,
+                  questionnaire: payload,
+                },
+              ]);
+            }}
+            onBrandingUpdated={(b) => {
+              setBranding(b);
+              loadModelCatalog();
+            }}
+            onClose={() => {
+              setRightPanel(null);
+              setRightExpanded(false);
+              loadModelCatalog();
+            }}
+          />
+        </>
       )}
 
       {/* Full-Screen Document Preview, Text Editing & Signature Studio */}
