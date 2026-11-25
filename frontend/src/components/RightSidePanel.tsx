@@ -168,7 +168,14 @@ export function RightSidePanel({
 
       {/* Main Panel Body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {request.panel === "ceo_analytics" && isCeo && <CeoAnalyticsSubPanel onOpenCase={(cid) => onNavigatePanel({ panel: "client", case_id: cid, title: `Case ${cid}` })} />}
+        {request.panel === "ceo_analytics" && isCeo && (
+          <CeoAnalyticsSubPanel
+            onOpenCase={(cid) => {
+              onSelectCaseForChat(cid);
+              onNavigatePanel({ panel: "client", case_id: cid, subview: "overview", title: `Case ${cid}` });
+            }}
+          />
+        )}
         {request.panel === "clients_list" && isStaffOrCeo && (
           <ClientsListSubPanel
             onOpenCase={(cid) => {

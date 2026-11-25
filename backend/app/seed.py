@@ -823,17 +823,15 @@ def seed_all(db: Session) -> None:
             db.add(PipelineJournal(case_id="C034", event_type="assets_approved", actor="Staff Specialist", summary="Approved DS-160 Worksheet PDF, Kingston Checklist PDF, and Visual Roadmap PNG for client portal download."))
             db.commit()
 
-    # 9. Always ensure the built-in all-tier Test Account (`testaccount` / `testpassword`, Recovery PIN `1234`)
-    # exists so CEO, Staff, and Customer Portal tiers can be tested immediately with unchanged seed data.
-    test_u = db.query(User).filter(User.username == "testaccount").first()
-    if not test_u:
-        test_u = db.query(User).filter(User.email == "testaccount@jahtariatravel.com").first()
-    if not test_u:
+    # 9. On a brand-new empty database only, seed the initial setup/testing account (`testaccount` / `testpassword`)
+    # so you can test all tiers and then change its username & password inside the app before shipping.
+    # Once renamed or once any real user exists, it is NEVER re-created on restart.
+    if db.query(User).count() == 0:
         db.add(
             User(
                 username="testaccount",
                 email="testaccount@jahtariatravel.com",
-                full_name="Test Account (All Tiers)",
+                full_name="Agency Administrator",
                 role="ceo",
                 all_tiers=True,
                 linked_case_id="C034",
@@ -843,22 +841,6 @@ def seed_all(db: Session) -> None:
             )
         )
         db.commit()
-    else:
-        changed = False
-        if test_u.username != "testaccount":
-            test_u.username = "testaccount"
-            changed = True
-        if not test_u.all_tiers:
-            test_u.all_tiers = True
-            changed = True
-        if not test_u.linked_case_id:
-            test_u.linked_case_id = "C034"
-            changed = True
-        if not test_u.recovery_pin_hash:
-            test_u.recovery_pin_hash = hash_password("1234")
-            changed = True
-        if changed:
-            db.commit()
 
     # 9b. Seed default Dual-Mode Gmail Automation & Cron Rules
     if db.query(EmailAutomationRule).count() == 0:

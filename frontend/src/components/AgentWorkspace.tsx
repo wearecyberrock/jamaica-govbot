@@ -220,21 +220,28 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
     if (u.role === "ceo" || u.role === "staff") {
       apiFetch<ClientSummary[]>("/api/clients")
         .then((list) => {
-          // Keep left sidebar super clean: only active live clients (33 historical reference cases live under Clients -> Historical)
-          const activeOnly = list.filter(
-            (c) => !(c.full_name || "").startsWith("Reference Case") && !(c.full_name || "").startsWith("Case C00")
-          );
-          setActiveClients(activeOnly.slice(0, 8));
+          setActiveClients(list);
         })
         .catch(() => {});
     }
   }, [router, requiredRole]);
+
+  // Keep sidebar client list live whenever clients are created, renamed, deleted, or switched
+  useEffect(() => {
+    if (!user || (user.role !== "ceo" && user.role !== "staff")) return;
+    apiFetch<ClientSummary[]>("/api/clients")
+      .then((list) => setActiveClients(list))
+      .catch(() => {});
+  }, [panelRefreshNonce, activeCaseId, user]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns, busy]);
 
   const openPanel = (req: PanelRequest) => {
+    if ((req.panel === "client" || req.panel === "customer_case") && req.case_id) {
+      setActiveCaseId(req.case_id);
+    }
     setRightPanel(req);
     setRecentPanels((prev) => {
       const dedup = prev.filter(
@@ -586,29 +593,48 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                 <SidebarBtn icon={UserPlus} label="Team & Staff" open={sidebarOpen} active={rightPanel?.panel === "team"} onClick={() => openPanel({ panel: "team", title: "Team & Staff Accounts" })} />
               )}
 
-              {/* Clean Active Clients Only (33 Historical cases live inside Clients -> Historical) */}
-              {sidebarOpen && activeClients.length > 0 && (
-                <div className="pt-3 mt-2 border-t border-white/10 px-1 space-y-0.5">
-                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-2 pb-1">
-                    Active Clients
+              {/* Selected Client + Active Clients (updates live when you click any client!) */}
+              {sidebarOpen && (() => {
+                const liveOnly = activeClients.filter(
+                  (c) => !(c.full_name || "").startsWith("Reference Case") && !(c.full_name || "").startsWith("Case C00")
+                );
+                const selectedObj = activeCaseId ? activeClients.find((c) => c.case_id === activeCaseId) : undefined;
+                const sidebarList = [
+                  ...(selectedObj ? [selectedObj] : []),
+                  ...liveOnly.filter((c) => c.case_id !== selectedObj?.case_id),
+                ].slice(0, 8);
+                if (sidebarList.length === 0) return null;
+                return (
+                  <div className="pt-3 mt-2 border-t border-white/10 px-1 space-y-0.5">
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-2 pb-1">
+                      Active Clients
+                    </div>
+                    {sidebarList.map((c) => {
+                      const isSel = activeCaseId === c.case_id;
+                      return (
+                        <button
+                          key={c.case_id}
+                          onClick={() => {
+                            setActiveCaseId(c.case_id);
+                            openPanel({ panel: "client", case_id: c.case_id, subview: "overview", title: `${c.case_id} — ${c.full_name}` });
+                          }}
+                          className={`w-full text-left px-2 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition ${
+                            isSel
+                              ? "bg-emerald-500/15 text-white border border-emerald-400/30"
+                              : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+                          }`}
+                        >
+                          <span className="truncate flex items-center gap-1.5">
+                            {isSel && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />}
+                            <span className="truncate">{c.full_name}</span>
+                          </span>
+                          <span className="text-[10px] font-mono text-emerald-400 shrink-0">{c.standing_score}%</span>
+                        </button>
+                      );
+                    })}
                   </div>
-                  {activeClients.map((c) => (
-                    <button
-                      key={c.case_id}
-                      onClick={() => {
-                        setActiveCaseId(c.case_id);
-                        openPanel({ panel: "client", case_id: c.case_id, subview: "overview", title: `${c.case_id} — ${c.full_name}` });
-                      }}
-                      className={`w-full text-left px-2 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition ${
-                        activeCaseId === c.case_id ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
-                      }`}
-                    >
-                      <span className="truncate">{c.full_name}</span>
-                      <span className="text-[10px] font-mono text-emerald-400 shrink-0">{c.standing_score}%</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+                );
+              })()}
             </>
           ) : (
             <>

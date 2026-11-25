@@ -311,7 +311,11 @@ def change_own_password(
         conflict = db.query(User).filter(User.username == new_u, User.id != user.id).first()
         if conflict:
             raise HTTPException(status_code=409, detail="That username is already taken.")
+        was_test = (user.username or "").lower() == "testaccount"
         user.username = new_u
+        if was_test and new_u != "testaccount":
+            # Promote out of dev test-switcher mode into a clean commercial CEO account
+            user.all_tiers = False
 
     if req.new_password.strip():
         if len(req.new_password) < 6:

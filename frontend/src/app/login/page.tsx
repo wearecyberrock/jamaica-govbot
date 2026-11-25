@@ -22,7 +22,7 @@ export default function LoginPage() {
   const [phone, setPhone] = useState("");
   const [parish, setParish] = useState("St. Andrew");
   const [visaClass, setVisaClass] = useState("B1/B2");
-  const [accessCode, setAccessCode] = useState("JAH-C034");
+  const [accessCode, setAccessCode] = useState("");
 
   // Forgot Password flow state
   const [forgotStep, setForgotStep] = useState<"lookup" | "reset">("lookup");
@@ -284,9 +284,10 @@ export default function LoginPage() {
                     className="g-input"
                     type="text"
                     required
+                    autoComplete="username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    placeholder="Enter username (e.g. testaccount)"
+                    placeholder="Enter your username"
                   />
                 </div>
                 <div>
@@ -306,22 +307,15 @@ export default function LoginPage() {
                       Forgot password?
                     </button>
                   </div>
-                  <input className="g-input" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-400 bg-white/[0.03] border border-white/10 rounded-lg px-2.5 py-1.5">
-                  <span>
-                    All-tier test login: <code className="text-emerald-300">testaccount</code> / <code className="text-emerald-300">testpassword</code>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setUsername("testaccount");
-                      setPassword("testpassword");
-                    }}
-                    className="text-[#e5b84b] hover:underline font-medium shrink-0 ml-2"
-                  >
-                    Fill
-                  </button>
+                  <input
+                    className="g-input"
+                    type="password"
+                    required
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                  />
                 </div>
               </>
             )}
@@ -370,7 +364,7 @@ export default function LoginPage() {
                           className="g-input"
                           value={resetPin}
                           onChange={(e) => setResetPin(e.target.value)}
-                          placeholder="Enter your Recovery PIN (e.g. 1234 for testaccount)"
+                          placeholder="Enter your Recovery PIN"
                         />
                       </div>
                     )}
