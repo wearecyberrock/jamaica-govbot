@@ -205,7 +205,7 @@ export function RightSidePanel({
             onOpenStudio={onOpenStudio}
           />
         )}
-        {request.panel === "gov_sources" && <GovSourcesSubPanel canScrape={isStaffOrCeo} />}
+        {request.panel === "gov_sources" && <GovSourcesSubPanel canScrape={isStaffOrCeo} refreshNonce={refreshNonce} />}
         {request.panel === "database" && isStaffOrCeo && <DatabaseSubPanel initialTable={request.table || "clients"} />}
         {request.panel === "obsidian" && isStaffOrCeo && <ObsidianSubPanel initialPath={request.path || "Index.md"} />}
         {request.panel === "team" && isCeo && <TeamSubPanel />}
@@ -1441,31 +1441,82 @@ function OfficialPdfsSubPanel({
 }
 
 /* ── 5. SCRAPED OFFICIAL GOV SOURCES ───────────────────────────────────────── */
-function GovSourcesSubPanel({ canScrape }: { canScrape: boolean }) {
+function GovSourcesSubPanel({ canScrape, refreshNonce = 0 }: { canScrape: boolean; refreshNonce?: number }) {
   const [sources, setSources] = useState<GovSourceItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newUrl, setNewUrl] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newAgency, setNewAgency] = useState("");
 
   const load = () => {
     apiFetch<GovSourceItem[]>("/api/sources").then(setSources).catch(() => {});
   };
-  useEffect(load, []);
+  useEffect(load, [refreshNonce]);
+
+  const addSource = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUrl.trim()) return;
+    setBusy(true);
+    try {
+      await apiFetch("/api/sources", {
+        method: "POST",
+        body: JSON.stringify({
+          url: newUrl.trim(),
+          name: newName.trim() || newUrl.trim().replace(/^https?:\/\//, "").split("/")[0],
+          agency: newAgency.trim() || "Official Agency",
+          category: newUrl.includes(".jm") ? "jamaica_civil" : "us_dos",
+        }),
+      });
+      setNewUrl("");
+      setNewName("");
+      setNewAgency("");
+      setShowAdd(false);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
       {canScrape && (
-        <button
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            await apiFetch("/api/sources/scrape-all", { method: "POST", body: JSON.stringify({ use_browser_fallback: false }) });
-            load();
-            setBusy(false);
-          }}
-          className="g-btn-primary w-full py-2 text-xs inline-flex items-center justify-center gap-1.5"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} />
-          {busy ? "Scraping Official Gov Sites..." : "Scrape & Verify All Official Sources"}
-        </button>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <button
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                await apiFetch("/api/sources/scrape-all", { method: "POST", body: JSON.stringify({ use_browser_fallback: false }) });
+                load();
+                setBusy(false);
+              }}
+              className="g-btn-primary flex-1 py-2 text-xs inline-flex items-center justify-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} />
+              {busy ? "Scraping Official Gov Sites..." : "Scrape & Verify All"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAdd(!showAdd)}
+              className="g-btn-ghost px-3 py-2 text-xs inline-flex items-center gap-1 shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add URL
+            </button>
+          </div>
+          {showAdd && (
+            <form onSubmit={addSource} className="g-card p-3 space-y-2">
+              <input required className="g-input text-xs" placeholder="https://jis.gov.jm/" value={newUrl} onChange={(e) => setNewUrl(e.target.value)} />
+              <div className="grid grid-cols-2 gap-2">
+                <input className="g-input text-xs" placeholder="Title (optional)" value={newName} onChange={(e) => setNewName(e.target.value)} />
+                <input className="g-input text-xs" placeholder="Agency (optional)" value={newAgency} onChange={(e) => setNewAgency(e.target.value)} />
+              </div>
+              <button type="submit" disabled={busy} className="g-btn-primary w-full py-1.5 text-xs">
+                Save &amp; Scrape Official Source
+              </button>
+            </form>
+          )}
+        </div>
       )}
       <div className="space-y-2.5">
         {sources.map((s) => (

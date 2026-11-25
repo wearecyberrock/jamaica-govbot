@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import re
 import secrets
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
 from app.config import mask_secret
-from app.models import ClientCase, ClientDocument, PendingAction, User
+from app.models import ClientCase, ClientDocument, GovSource, PendingAction, User
 from app.services.connectors import get_mcp_servers, get_setting, save_mcp_servers, set_setting, test_mcp_server_url
 from app.services.hermes_engine import call_llm_detailed
+from app.services.scraper import scrape_single_source
 
 
 # ── 1. Smart Paste Auto-Setup (Auto-applies low-risk setup with Undo + Secret Redaction!) ──
@@ -204,6 +210,104 @@ def detect_and_apply_smart_paste(db: Session, user: User, msg: str) -> dict[str,
                 + "\n\nClick **Undo Change** below anytime to remove."
             ),
         }
+
+    # D2. Official Government / Agency Website URL paste -> ACTUALLY add to GovSource & scrape live!
+    any_url_m = re.search(r"(https?://[^\s\"'<>]+)", text)
+    if any_url_m:
+        raw_url = any_url_m.group(1).rstrip(".,);")
+        is_add_resource_intent = any(
+            k in low
+            for k in ("add ", "save ", "resource", "source", "official", "bookmark", "track ", "scrape ", "monitor ")
+        ) or text.strip() == raw_url or any(dom in raw_url.lower() for dom in (".gov", ".gov.jm", "usembassy.gov", "state.gov"))
+        # Skip if it's purely a question like "was https://jis.gov.jm/ added"
+        is_just_checking = any(low.startswith(p) for p in ("was ", "is ", "did ", "has ", "check if "))
+        if is_add_resource_intent and not is_just_checking:
+            parsed_u = urlparse(raw_url)
+            host = (parsed_u.netloc or raw_url).replace("www.", "")
+            existing_src = db.query(GovSource).filter(GovSource.url == raw_url).first()
+            if not existing_src:
+                existing_src = db.query(GovSource).filter(GovSource.url == raw_url.rstrip("/")).first()
+            if existing_src:
+                scrape_res = scrape_single_source(db, existing_src)
+                return {
+                    "kind": "gov_source",
+                    "redacted_message": text,
+                    "pending_action": None,
+                    "ui_panel": {"panel": "gov_sources", "title": "Official Scraped Gov Sources"},
+                    "reply": (
+                        f"**{existing_src.name}** (`{existing_src.url}`) is already in your Official Resources — "
+                        f"I refreshed it live (`status: {scrape_res.get('status')}`) and opened **Official Scraped Gov Sources** in the side panel."
+                    ),
+                }
+
+            # Fetch page title cleanly if reachable
+            page_title = ""
+            try:
+                with httpx.Client(timeout=8.0, follow_redirects=True, headers={"User-Agent": "JahtariaVisaBot/2.1"}) as client:
+                    rr = client.get(raw_url)
+                    if rr.status_code < 400:
+                        soup = BeautifulSoup(rr.text[:25000], "html.parser")
+                        if soup.title and soup.title.string:
+                            page_title = re.sub(r"\s+", " ", soup.title.string).strip()[:120]
+            except Exception:
+                pass
+
+            name = page_title or host
+            agency = host.upper() if ".gov" in host.lower() else host
+            if "jis.gov.jm" in host.lower():
+                agency = "Jamaica Information Service (JIS)"
+            elif ".gov.jm" in host.lower():
+                agency = f"Government of Jamaica ({host})"
+            elif ".gov" in host.lower():
+                agency = f"U.S. Government ({host})"
+
+            category = "jamaica_civil" if ".jm" in host.lower() else "us_dos"
+            src_key = re.sub(r"[^a-z0-9_]+", "_", host.lower()).strip("_")[:50]
+            if db.query(GovSource).filter(GovSource.source_key == src_key).first():
+                src_key = f"{src_key}_{int(datetime.now(timezone.utc).timestamp())}"
+
+            src = GovSource(
+                source_key=src_key,
+                name=name,
+                agency=agency,
+                category=category,
+                url=raw_url,
+                verified_summary=f"Official resource added by {user.full_name}: {name} ({raw_url}).",
+                content_hash=hashlib.sha256(raw_url.encode("utf-8")).hexdigest(),
+                scrape_status="pending_scrape",
+                enabled=True,
+            )
+            db.add(src)
+            db.commit()
+            scrape_res = scrape_single_source(db, src)
+            db.refresh(src)
+
+            act = PendingAction(
+                user_id=user.id,
+                action_type="add_gov_source",
+                target_ref=src.source_key,
+                summary=f"Added Official Resource: {src.name} ({src.url})",
+                before_json=json.dumps({"source_key": src.source_key}),
+                after_json=json.dumps({"source_key": src.source_key, "url": src.url, "name": src.name}),
+                status="applied",
+            )
+            db.add(act)
+            db.commit()
+            db.refresh(act)
+            return {
+                "kind": "gov_source",
+                "redacted_message": text,
+                "pending_action": act,
+                "ui_panel": {"panel": "gov_sources", "title": "Official Scraped Gov Sources"},
+                "reply": (
+                    f"**Added to Official Resources & Scraped Live!**\n\n"
+                    f"- **Name:** {src.name}\n"
+                    f"- **Agency:** {src.agency}\n"
+                    f"- **URL:** {src.url}\n"
+                    f"- **Live Scrape Status:** `{scrape_res.get('status')}`\n\n"
+                    "It is now saved in your database and visible in the **Official Scraped Gov Sources** panel on the right (click **Undo Change** below anytime to remove it)."
+                ),
+            }
 
     # E. Pasted multi-line CSV customer data
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]

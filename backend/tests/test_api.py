@@ -192,6 +192,12 @@ def test_full_backend_workflow():
         # Undo key change
         assert client.post(f"/api/actions/{sp_key.json()['pending_action']['id']}/undo", headers=ceo_h).status_code == 200
 
+        # Smart Paste Official URL -> GovSource auto-add + Undo
+        sp_url = client.post("/api/agent/command", headers=ceo_h, json={"message": "https://jis.gov.jm/ add this as resource"})
+        assert sp_url.status_code == 200 and sp_url.json()["provider_used"] == "smart-paste-engine"
+        assert any("jis.gov.jm" in s["url"] for s in client.get("/api/sources", headers=ceo_h).json())
+        assert client.post(f"/api/actions/{sp_url.json()['pending_action']['id']}/undo", headers=ceo_h).status_code == 200
+
         # 11. Client Vault upload + 92% RGD Converter + Document Studio Burn-In + Embassy Packet + Excel Export
         from PIL import Image
         import io as _io

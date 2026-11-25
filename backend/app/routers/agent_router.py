@@ -546,6 +546,13 @@ def undo_applied_action(
             set_setting(db, k, str(v or ""), is_secret=is_sec, category="ai")
     elif act.action_type == "update_mcp_servers":
         save_mcp_servers(db, before.get("servers") or [])
+    elif act.action_type == "add_gov_source":
+        from app.models import GovSource
+
+        sk = before.get("source_key") or act.target_ref
+        src = db.query(GovSource).filter(GovSource.source_key == sk).first()
+        if src:
+            db.delete(src)
 
     act.status = "undone"
     db.commit()

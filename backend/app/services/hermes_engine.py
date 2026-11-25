@@ -808,7 +808,7 @@ def _build_client_context(db: Session, client: ClientCase | None, extra_context:
     blocks: list[str] = []
     if client:
         blocks.append(
-            f"Active Client Case Context:\n"
+            f"Active Client Case Context (NOTE: This is the client file currently selected in the workspace — do NOT assume the logged-in staff/CEO chatting with you IS this client unless they say so):\n"
             f"- Case ID: {client.case_id} | Name: {client.full_name or client.pseudonym} | Visa Class: {client.visa_class}\n"
             f"- Stage: {client.pipeline_stage} | Good Standing: {client.standing_score}% | Denial Risk: {client.denial_risk_level} | Outcome: {client.outcome}\n"
             f"- Occupation: {client.occupation or 'Not set'} | Employer: {client.employer_name or 'Not set'}\n"
