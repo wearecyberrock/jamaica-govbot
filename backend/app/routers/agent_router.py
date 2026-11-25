@@ -14,12 +14,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
-from app.config import BLUEPRINTS_DIR
+from app.config import BLUEPRINTS_DIR, CLIENT_VAULT_DIR, encrypt_value
 from app.database import get_db
 from app.models import (
     BrandingConfig,
     ChatMessage,
     ClientCase,
+    ClientDocument,
     Conversation,
     GeneratedAsset,
     OfficialDocument,
@@ -28,7 +29,9 @@ from app.models import (
     RiskFlag,
     User,
 )
-from app.services.doc_generator import inspect_blueprint_file
+from app.services.connectors import save_mcp_servers, set_setting
+from app.services.doc_generator import inspect_blueprint_file, sha256_file
+from app.services.doc_intelligence import get_pdf_page_count, scan_document_with_ai
 from app.services.hermes_engine import (
     answer_customer_question,
     call_llm,
@@ -37,6 +40,11 @@ from app.services.hermes_engine import (
 )
 from app.services.obsidian import sync_client_to_obsidian
 from app.services.risk_engine import evaluate_client_standing
+from app.services.smart_paste import (
+    build_dynamic_data_table,
+    detect_and_apply_smart_paste,
+    detect_natural_client_crud,
+)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
@@ -371,6 +379,8 @@ def get_conversation_messages(
                 "panel": meta.get("panel") if isinstance(meta, dict) else None,
                 "pending_action": meta.get("pending_action") if isinstance(meta, dict) else None,
                 "questionnaire": meta.get("questionnaire") if isinstance(meta, dict) else None,
+                "data_table": meta.get("data_table") if isinstance(meta, dict) else None,
+                "vault_doc": meta.get("vault_doc") if isinstance(meta, dict) else None,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
         )
@@ -414,12 +424,76 @@ def confirm_pending_action(
         c = db.query(ClientCase).filter(ClientCase.case_id == act.target_ref).first()
         if c:
             for k, v in after.items():
-                if hasattr(c, k):
+                if k == "passport_number":
+                    c.passport_number_enc = encrypt_value(str(v))
+                elif k == "dob":
+                    c.dob_enc = encrypt_value(str(v))
+                elif hasattr(c, k):
                     setattr(c, k, v)
             db.add(PipelineJournal(case_id=c.case_id, event_type="ai_edit_confirmed", actor=user.full_name, summary=f"Confirmed AI edit: {act.summary}"))
             db.commit()
             evaluate_client_standing(db, c)
             sync_client_to_obsidian(c, c.risk_flags, c.journal_entries)
+    elif act.action_type == "create_client":
+        count = db.query(ClientCase).count()
+        cid = f"C{count + 1:03d}"
+        while db.query(ClientCase).filter(ClientCase.case_id == cid).first():
+            count += 1
+            cid = f"C{count + 1:03d}"
+        full_name = str(after.get("full_name") or f"New Client {cid}")
+        c = ClientCase(
+            case_id=cid,
+            access_code=f"JAH-{cid}-{secrets.token_hex(2).upper()}",
+            pseudonym=full_name,
+            full_name=full_name,
+            pipeline_stage="new_intake",
+            assigned_staff=user.full_name,
+        )
+        for k, v in after.items():
+            if k == "passport_number":
+                c.passport_number_enc = encrypt_value(str(v))
+            elif k == "dob":
+                c.dob_enc = encrypt_value(str(v))
+            elif hasattr(c, k):
+                setattr(c, k, v)
+        db.add(c)
+        db.flush()
+        act.target_ref = cid
+        act.before_json = json.dumps({"created_case_id": cid})
+        db.add(PipelineJournal(case_id=cid, event_type="ai_client_created", actor=user.full_name, summary=f"Created client {cid} ({full_name}) via chat confirm."))
+        db.commit()
+        evaluate_client_standing(db, c)
+        sync_client_to_obsidian(c, c.risk_flags, c.journal_entries)
+    elif act.action_type == "bulk_create_clients":
+        created_ids = []
+        for item in after.get("clients") or []:
+            count = db.query(ClientCase).count()
+            cid = f"C{count + 1:03d}"
+            while db.query(ClientCase).filter(ClientCase.case_id == cid).first():
+                count += 1
+                cid = f"C{count + 1:03d}"
+            nm = str(item.get("full_name") or f"Imported {cid}")
+            c = ClientCase(
+                case_id=cid,
+                access_code=f"JAH-{cid}-{secrets.token_hex(2).upper()}",
+                pseudonym=nm,
+                full_name=nm,
+                email=str(item.get("email") or ""),
+                phone=str(item.get("phone") or ""),
+                parish=str(item.get("parish") or "Kingston & St. Andrew"),
+                visa_class=str(item.get("visa_class") or "B1/B2"),
+                occupation=str(item.get("occupation") or ""),
+                employer_name=str(item.get("employer_name") or ""),
+                us_destination=str(item.get("us_destination") or ""),
+                purpose_of_trip=str(item.get("purpose_of_trip") or ""),
+                pipeline_stage="data_synced",
+                assigned_staff=user.full_name,
+            )
+            db.add(c)
+            db.flush()
+            created_ids.append(cid)
+        act.before_json = json.dumps({"created_case_ids": created_ids})
+        db.commit()
 
     act.status = "applied"
     act.applied_at = datetime.now(timezone.utc)
@@ -448,12 +522,30 @@ def undo_applied_action(
         c = db.query(ClientCase).filter(ClientCase.case_id == act.target_ref).first()
         if c:
             for k, v in before.items():
+                if k in ("passport_number", "dob"):
+                    continue
                 if hasattr(c, k):
                     setattr(c, k, v)
             db.add(PipelineJournal(case_id=c.case_id, event_type="ai_edit_undone", actor=user.full_name, summary=f"Undid AI edit: {act.summary}"))
             db.commit()
             evaluate_client_standing(db, c)
             sync_client_to_obsidian(c, c.risk_flags, c.journal_entries)
+    elif act.action_type == "create_client":
+        cid = before.get("created_case_id") or act.target_ref
+        c = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
+        if c:
+            db.delete(c)
+    elif act.action_type == "bulk_create_clients":
+        for cid in before.get("created_case_ids") or []:
+            c = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
+            if c:
+                db.delete(c)
+    elif act.action_type == "update_setting":
+        for k, v in before.items():
+            is_sec = any(x in k.lower() for x in ("key", "token", "secret"))
+            set_setting(db, k, str(v or ""), is_secret=is_sec, category="ai")
+    elif act.action_type == "update_mcp_servers":
+        save_mcp_servers(db, before.get("servers") or [])
 
     act.status = "undone"
     db.commit()
@@ -702,7 +794,7 @@ def generate_dynamic_questionnaire(
     }
 
 
-# ── Direct Chat File Drop / Attachment ───────────────────────────────────────
+# ── Direct Chat File Drop / Clipboard Image Paste / CSV-Excel Import ─────────
 
 @router.post("/agent/upload-chat-file")
 async def upload_file_in_chat(
@@ -711,41 +803,176 @@ async def upload_file_in_chat(
     user: User = Depends(require_roles("ceo", "staff")),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """Smart Chat Upload: handles images, PDFs, DOCX, CSV, and Excel (.xlsx) pasted or dropped into chat."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename.")
     ext = Path(file.filename).suffix.lower()
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file.filename).name)
-    target = BLUEPRINTS_DIR / safe_name
-    target.write_bytes(await file.read())
-    info = inspect_blueprint_file(target)
+    raw_bytes = await file.read()
 
-    doc_key = re.sub(r"[^a-z0-9_]+", "_", target.stem.lower()).strip("_")[:55]
-    if db.query(OfficialDocument).filter(OfficialDocument.doc_key == doc_key).first():
-        doc_key = f"{doc_key}_{secrets.token_hex(2)}"
+    # 1. CSV / Excel customer data file -> propose bulk import via Confirm card!
+    if ext in (".csv", ".xlsx"):
+        import csv as _csv
+        import io as _io
 
-    doc = OfficialDocument(
-        doc_key=doc_key,
-        title=target.stem.replace("_", " "),
-        agency=f"Uploaded ({case_id or user.full_name})",
-        category="agency_blueprint",
+        if ext == ".xlsx":
+            import openpyxl
+
+            wb = openpyxl.load_workbook(_io.BytesIO(raw_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            buf = _io.StringIO()
+            w = _csv.writer(buf)
+            for r in ws.iter_rows(values_only=True):
+                w.writerow(["" if v is None else str(v) for v in r])
+            csv_text = buf.getvalue()
+        else:
+            csv_text = raw_bytes.decode("utf-8", errors="replace")
+
+        reader = _csv.DictReader(_io.StringIO(csv_text))
+        parsed_rows = []
+        for row in reader:
+            norm = {k.strip().lower().replace(" ", "_"): (v or "").strip() for k, v in row.items() if k}
+            nm = norm.get("full_name") or norm.get("name") or norm.get("client_name")
+            if nm:
+                parsed_rows.append(
+                    {
+                        "full_name": nm,
+                        "email": norm.get("email", ""),
+                        "phone": norm.get("phone", ""),
+                        "parish": norm.get("parish", "Kingston & St. Andrew"),
+                        "visa_class": norm.get("visa_class", "B1/B2") or "B1/B2",
+                        "occupation": norm.get("occupation", ""),
+                        "employer_name": norm.get("employer") or norm.get("employer_name", ""),
+                        "us_destination": norm.get("us_destination") or norm.get("destination", ""),
+                        "purpose_of_trip": norm.get("purpose_of_trip") or norm.get("purpose", ""),
+                    }
+                )
+        if parsed_rows:
+            pa = PendingAction(
+                user_id=user.id,
+                action_type="bulk_create_clients",
+                target_ref="clients",
+                summary=f"Import {len(parsed_rows)} client(s) from '{safe_name}'",
+                before_json=json.dumps({}),
+                after_json=json.dumps({"clients": parsed_rows}),
+                status="pending",
+            )
+            db.add(pa)
+            db.commit()
+            db.refresh(pa)
+            return {
+                "kind": "spreadsheet_import",
+                "title": safe_name,
+                "filename": safe_name,
+                "row_count": len(parsed_rows),
+                "pending_action": _serialize_action(pa),
+                "panel": {"panel": "spreadsheet", "title": "Client Spreadsheet"},
+                "summary": f"Detected **{len(parsed_rows)} customer record(s)** in `{safe_name}`. Click **Confirm & Apply** to add them to your Client Spreadsheet.",
+            }
+
+    # 2. Client Document / Image / PDF / DOCX -> store in Client Vault + run AI Vision/OCR scan!
+    cid = case_id.strip().upper() if case_id and case_id.strip() else None
+    client = db.query(ClientCase).filter(ClientCase.case_id == cid).first() if cid else None
+    if not client:
+        cid = None
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    dest_dir = (CLIENT_VAULT_DIR / cid) if cid else (CLIENT_VAULT_DIR / "_inbox")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / f"{ts}_{safe_name}"
+    target.write_bytes(raw_bytes)
+
+    mime = file.content_type or ("application/pdf" if ext == ".pdf" else ("image/png" if ext in (".png", ".jpg", ".jpeg", ".webp") else "application/octet-stream"))
+    scan = scan_document_with_ai(db, target, mime, safe_name)
+
+    vdoc = ClientDocument(
+        case_id=cid,
+        category=scan["category"],
+        title=scan.get("document_type") or target.stem.replace("_", " "),
         filename=safe_name,
         file_path=str(target),
-        file_format=ext or ".bin",
-        size_bytes=info["size_bytes"],
-        sha256=info["sha256"],
-        description=f"Attached directly in chat by {user.full_name}.",
-        detected_fields_json=json.dumps(info["detected_fields"]),
-        is_blueprint=ext in (".pdf", ".docx"),
+        mime_type=mime,
+        size_bytes=len(raw_bytes),
+        sha256=sha256_file(target),
+        page_count=get_pdf_page_count(target),
+        extracted_text=scan.get("extracted_text", ""),
+        extracted_fields_json=json.dumps(scan.get("extracted_fields", {})),
+        ai_summary=scan.get("summary", ""),
+        uploaded_by=user.full_name,
     )
-    db.add(doc)
+    db.add(vdoc)
+    db.flush()
+
+    pending_action_out = None
+    ext_fields: dict[str, Any] = scan.get("extracted_fields") or {}
+    if client and ext_fields:
+        before: dict[str, Any] = {}
+        updates: dict[str, Any] = {}
+        for k, v in ext_fields.items():
+            if k in ("passport_number", "dob"):
+                before[k] = "(encrypted)"
+                updates[k] = v
+            elif hasattr(client, k) and getattr(client, k) != v:
+                before[k] = getattr(client, k)
+                updates[k] = v
+        if updates:
+            diff_str = ", ".join(f"{k}: {v!r}" for k, v in list(updates.items())[:6])
+            pa = PendingAction(
+                user_id=user.id,
+                action_type="update_client",
+                target_ref=client.case_id,
+                summary=f"Apply scanned fields from '{vdoc.title}' to {client.case_id} ({diff_str})",
+                before_json=json.dumps(before, default=str),
+                after_json=json.dumps(updates, default=str),
+            )
+            db.add(pa)
+            db.flush()
+            pending_action_out = _serialize_action(pa)
+
+    # Also index PDF/DOCX blueprints in OfficialDocument if unassigned blueprint
+    info = inspect_blueprint_file(target) if ext in (".pdf", ".docx") else {"pages": 1, "detected_fields": []}
+    if cid:
+        db.add(
+            PipelineJournal(
+                case_id=cid,
+                event_type="chat_document_uploaded",
+                actor=user.full_name,
+                summary=f"Uploaded & scanned '{vdoc.title}' via chat ({len(ext_fields)} field(s) extracted).",
+            )
+        )
     db.commit()
+    db.refresh(vdoc)
+
+    vault_doc_payload = {
+        "id": vdoc.id,
+        "case_id": vdoc.case_id,
+        "category": vdoc.category,
+        "title": vdoc.title,
+        "filename": vdoc.filename,
+        "mime_type": vdoc.mime_type,
+        "page_count": vdoc.page_count,
+        "ai_summary": vdoc.ai_summary,
+        "extracted_fields": ext_fields,
+        "compliance_alerts": scan.get("compliance_alerts", []),
+        "file_url": f"/api/documents/vault/{vdoc.id}/file",
+        "needs_client_assignment": cid is None,
+    }
+    panel = (
+        {"panel": "client", "case_id": cid, "subview": "blueprints", "title": f"Vault — {cid}"}
+        if cid
+        else {"panel": "spreadsheet", "title": "Client Spreadsheet"}
+    )
     return {
-        "doc_key": doc.doc_key,
-        "title": doc.title,
-        "filename": doc.filename,
+        "kind": "vault_document",
+        "doc_id": vdoc.id,
+        "title": vdoc.title,
+        "filename": vdoc.filename,
         "pages": info["pages"],
         "detected_fields": info["detected_fields"],
-        "panel": {"panel": "official_pdfs", "doc_key": doc.doc_key, "title": f"Attached: {doc.title}"},
+        "vault_doc": vault_doc_payload,
+        "pending_action": pending_action_out,
+        "panel": panel,
+        "summary": vdoc.ai_summary,
     }
 
 
@@ -775,7 +1002,8 @@ def unified_agent_command(
         conv.updated_at = datetime.now(timezone.utc)
 
     history = load_conversation_history(db, conv_id, max_turns=10)
-    db.add(ChatMessage(session_id=conv_id, case_id=req.case_id or user.linked_case_id, user_role=role, sender="user", content=msg))
+    user_msg_row = ChatMessage(session_id=conv_id, case_id=req.case_id or user.linked_case_id, user_role=role, sender="user", content=msg)
+    db.add(user_msg_row)
 
     ui_panel: dict[str, Any] | None = None
     tool_trace: list[dict[str, Any]] = []
@@ -783,6 +1011,7 @@ def unified_agent_command(
     created_assets: list[dict[str, Any]] = []
     pending_action_payload: dict[str, Any] | None = None
     questionnaire_payload: dict[str, Any] | None = None
+    data_table_payload: dict[str, Any] | None = None
     reply = ""
     provider = "consular-ai-local"
 
@@ -824,180 +1053,200 @@ def unified_agent_command(
     else:
         target_cid = _detect_case_id(db, msg, req.case_id)
 
-        # Check CEO / Staff Conversational Edit Proposal FIRST (Preview/Confirm + Undo!)
-        proposed = _detect_ceo_conversational_edit(db, user, msg, target_cid)
-        if proposed:
-            pending_action_payload = _serialize_action(proposed)
-            reply = f"I prepared this change for your review:\n\n**{proposed.summary}**\n\nClick **Confirm & Apply** below to execute (with full Undo & audit logging)."
-            if proposed.action_type == "update_client" and target_cid:
-                ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Case {target_cid}"}
-            elif proposed.action_type == "update_branding":
-                ui_panel = {"panel": "settings", "title": "Settings & Branding"}
-        elif target_cid and _wants_questionnaire_generation(low):
-            req_n = _extract_requested_question_count(msg, default=5)
-            q_res = generate_dynamic_questionnaire(target_cid, GenerateQuestionsRequest(focus=msg, count=req_n), user=user, db=db)
-            qs = q_res["questions_added"]
-            questionnaire_payload = q_res["questionnaire"]
-            ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Questionnaire — {target_cid}"}
-            reply = (
-                f"Generated **{len(qs)} interactive question(s)** for **{target_cid}** (total in case: **{questionnaire_payload['total_count']}**) — "
-                "use the interactive card below with **Tips**, **Multiple Choice**, or custom answers, and generate as many more as you need anytime."
-            )
-            provider = q_res["provider_used"]
+        # 0. Smart Paste Auto-Setup FIRST (API keys, MCP URLs/JSON, ClawLink, Composio, pasted CSV!)
+        smart = detect_and_apply_smart_paste(db, user, msg)
+        if smart:
+            # Redact pasted secret keys from saved chat history!
+            if smart.get("redacted_message"):
+                user_msg_row.content = smart["redacted_message"]
+                if conv.title and any(tok in conv.title for tok in ("sk-", "AIza", "xai-", "ak_")):
+                    conv.title = "API Key / Connection Setup"
+            pending_action_payload = _serialize_action(smart["pending_action"]) if smart.get("pending_action") else None
+            ui_panel = smart.get("ui_panel")
+            reply = smart["reply"]
+            provider = "smart-paste-engine"
         else:
-            is_action_task = req.mode == "task" or (
-                any(
-                    k in low
-                    for k in (
-                        "audit",
-                        "generate",
-                        "draft",
-                        "create packet",
-                        "roadmap",
-                        "worksheet",
-                        "checklist",
-                        "scrape",
-                        "refresh",
-                        "sync obsidian",
-                    )
+            # 1. Check CEO / Staff Conversational Edit / Natural-Language Client Creation (Preview/Confirm + Undo!)
+            proposed = _detect_ceo_conversational_edit(db, user, msg, target_cid) or detect_natural_client_crud(db, user, msg, target_cid)
+            if proposed:
+                pending_action_payload = _serialize_action(proposed)
+                reply = f"I prepared this change for your review:\n\n**{proposed.summary}**\n\nClick **Confirm & Apply** below to execute (with full Undo & audit logging)."
+                if proposed.action_type == "update_client" and target_cid:
+                    ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Case {target_cid}"}
+                elif proposed.action_type == "create_client":
+                    ui_panel = {"panel": "spreadsheet", "title": "Client Spreadsheet"}
+                elif proposed.action_type == "update_branding":
+                    ui_panel = {"panel": "settings", "title": "Settings & Branding"}
+            elif target_cid and _wants_questionnaire_generation(low):
+                req_n = _extract_requested_question_count(msg, default=5)
+                q_res = generate_dynamic_questionnaire(target_cid, GenerateQuestionsRequest(focus=msg, count=req_n), user=user, db=db)
+                qs = q_res["questions_added"]
+                questionnaire_payload = q_res["questionnaire"]
+                ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Questionnaire — {target_cid}"}
+                reply = (
+                    f"Generated **{len(qs)} interactive question(s)** for **{target_cid}** (total in case: **{questionnaire_payload['total_count']}**) — "
+                    "use the interactive card below with **Tips**, **Multiple Choice**, or custom answers, and generate as many more as you need anytime."
                 )
-                and not any(k in low for k in ("ceo", "analytics", "graph", "chart", "recall", "scenario", "senario", "possible question"))
-            )
-
-            # Decide which companion side panel (if any) to open alongside the AI reply
-            if role == "ceo" and any(k in low for k in ("ceo", "analytics", "graph", "chart", "kpi", "revenue", "approval rate", "recall", "metrics", "overview", "executive")):
-                ui_panel = {"panel": "ceo_analytics", "title": "CEO Executive Analytics & Graphs"}
-            elif role == "ceo" and any(k in low for k in ("staff", "team", "create account", "new user", "add staff", "manage user", "logins")):
-                ui_panel = {"panel": "team", "title": "Team & Staff Account Manager"}
-            elif any(k in low for k in ("open setting", "voice setting", "elevenlabs", "fish audio", "subscription", "codex", "claude", "chatgpt", "antigravity", "api key", "ollama", "composio", "mcp", "brand")):
-                ui_panel = {"panel": "settings", "title": "AI Subscriptions, Voice & Setup"}
-            elif any(k in low for k in ("obsidian", "vault", "wikilink")):
-                note_path = f"Clients/{target_cid}.md" if target_cid and "client" in low else "Index.md"
-                ui_panel = {"panel": "obsidian", "path": note_path, "title": f"Obsidian Vault — {note_path}"}
-            elif any(k in low for k in ("database", "sql", "table", "manifest", "csv", "spreadsheet", "import")):
-                tbl = "source_manifest" if "manifest" in low else ("gov_sources" if "source" in low else "clients")
-                ui_panel = {"panel": "database", "table": tbl, "title": f"Database Explorer ({tbl})"}
-            elif any(k in low for k in ("pdf", "pica", "ds-5535", "ds5535", "ds-157", "ds157", "ds-156", "birreq", "passport form", "blueprint", "official doc", "show doc", "document")) and not any(k in low for k in ("generate", "draft", "create")):
-                doc_key = _match_official_pdf(db, low)
-                ui_panel = {"panel": "official_pdfs", "doc_key": doc_key, "title": "Official Government PDF Viewer"}
-            elif any(k in low for k in ("source", "scrape", "embassy link", "gov link", "website")):
-                ui_panel = {"panel": "gov_sources", "title": "Official Scraped Gov Sources"}
-            elif any(k in low for k in ("all client", "list client", "pipeline", "kanban", "all case", "show case")):
-                ui_panel = {"panel": "clients_list", "title": "Client Pipeline & Cases"}
-            elif target_cid:
-                sub = "overview"
-                if any(k in low for k in ("intake", "edit", "form", "questionn", "questiona", "follow-up", "followup", "folloup")):
-                    sub = "intake"
-                elif any(k in low for k in ("interview", "mock", "predict", "freeze", "scenario", "senario", "possible question", "questions")):
-                    sub = "interview"
-                elif any(k in low for k in ("roadmap", "image", "worksheet", "checklist", "letter", "docx", "generate", "draft", "approve", "asset", "file", "doc")):
-                    sub = "blueprints"
-                elif any(k in low for k in ("journal", "history", "timeline", "log")):
-                    sub = "journal"
-                ui_panel = {"panel": "client", "case_id": target_cid, "subview": sub, "title": f"Case {target_cid}"}
-
-            if is_action_task:
-                res = run_staff_agent_loop(
-                    db,
-                    msg,
-                    case_id=target_cid,
-                    actor=f"Consular AI ({user.full_name})",
-                    conversation_id=conv_id,
-                    history=history,
-                )
-                reply = res["reply"]
-                tool_trace = res.get("tool_trace", [])
-                provider = res["provider_used"]
-                if res.get("created_assets") and target_cid:
-                    recent = (
-                        db.query(GeneratedAsset)
-                        .filter(GeneratedAsset.case_id == target_cid)
-                        .order_by(GeneratedAsset.id.desc())
-                        .limit(len(res["created_assets"]))
-                        .all()
-                    )
-                    created_assets = [
-                        {
-                            "id": a.id,
-                            "title": a.title,
-                            "filename": a.filename,
-                            "mime_type": a.mime_type,
-                            "approval_status": a.approval_status,
-                            "file_url": f"/api/assets/{a.id}/file",
-                        }
-                        for a in recent
-                    ]
-                    ui_panel = {
-                        "panel": "client",
-                        "case_id": target_cid,
-                        "subview": "blueprints",
-                        "preview_asset_id": recent[0].id if recent else None,
-                        "title": f"Draft Deliverables — {target_cid}",
-                    }
+                provider = q_res["provider_used"]
             else:
-                # Build rich live workspace context and ALWAYS let the live AI respond naturally!
-                client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first() if target_cid else None
-                extra_parts: list[str] = []
-                if ui_panel:
-                    extra_parts.append(
-                        f"UI Action Already Performed: Opened the right-hand side panel '{ui_panel.get('title')}' "
-                        f"(panel={ui_panel.get('panel')}, subview={ui_panel.get('subview', 'default')})."
-                    )
-                if ui_panel and ui_panel["panel"] == "ceo_analytics":
-                    total = db.query(ClientCase).count()
-                    approved = db.query(ClientCase).filter(ClientCase.outcome == "approved").count()
-                    refused = db.query(ClientCase).filter(ClientCase.outcome == "refused").count()
-                    extra_parts.append(f"Live Agency Portfolio KPIs: Total={total} cases, Approved={approved}, Refused={refused}.")
-                elif ui_panel and ui_panel["panel"] == "official_pdfs":
-                    docs = db.query(OfficialDocument).all()
-                    doc_list = ", ".join(f"{d.title} ({d.filename})" for d in docs[:10])
-                    extra_parts.append(f"Available Official Government PDFs & Blueprints in the side panel: {doc_list}.")
-                elif ui_panel and ui_panel["panel"] == "clients_list":
-                    top_cases = db.query(ClientCase).order_by(ClientCase.updated_at.desc()).limit(10).all()
-                    case_list = ", ".join(f"{c.case_id} ({c.full_name or c.pseudonym}, {c.standing_score}%)" for c in top_cases)
-                    extra_parts.append(f"Recent Clients in Pipeline: {case_list}.")
-
-                # If user asked to show/open/import the questionnaire for a client, attach the interactive Chat Card!
-                if client and any(k in low for k in ("questionn", "questiona", "import question", "show question")):
-                    if not any(f.follow_up_question for f in client.risk_flags):
-                        q_res = generate_dynamic_questionnaire(client.case_id, GenerateQuestionsRequest(focus=msg, count=5), user=user, db=db)
-                        questionnaire_payload = q_res["questionnaire"]
-                    else:
-                        questionnaire_payload = _serialize_questionnaire_payload(client)
-
-                # For bare navigation commands when no LLM is connected, or if live AI answers directly:
-                res = answer_customer_question(
-                    db,
-                    msg,
-                    client,
-                    conversation_id=conv_id,
-                    history=history,
-                    extra_context="\n".join(extra_parts),
-                )
-                reply = res["reply"]
-                citations = res.get("citations", [])
-                provider = res["provider_used"]
-
-                # If no live AI is connected yet AND a panel was opened, give a crisp panel-specific summary
-                if provider == "none-configured" and ui_panel:
-                    if ui_panel["panel"] == "client" and client:
-                        red_n = sum(1 for f in client.risk_flags if f.severity == "red" and not f.resolved)
-                        amber_n = sum(1 for f in client.risk_flags if f.severity == "amber" and not f.resolved)
-                        reply = (
-                            f"Opened **{client.case_id} — {client.full_name or client.pseudonym}** (`{client.visa_class}`) in the side panel.\n\n"
-                            f"- **Good Standing:** `{client.standing_score}%` ({client.denial_risk_level.upper()} risk — {red_n} Red, {amber_n} Amber)\n"
-                            f"- **Stage:** `{client.pipeline_stage.replace('_', ' ').title()}` | **DS-160:** `{client.ds160_confirmation_id or 'Pending'}`\n\n"
-                            "*Connect an AI provider in Settings → AI Subscriptions & Setup for full conversational answers about this case.*"
+                is_action_task = req.mode == "task" or (
+                    any(
+                        k in low
+                        for k in (
+                            "audit",
+                            "generate",
+                            "draft",
+                            "create packet",
+                            "roadmap",
+                            "worksheet",
+                            "checklist",
+                            "scrape",
+                            "refresh",
+                            "sync obsidian",
                         )
-                    elif ui_panel["panel"] == "ceo_analytics":
+                    )
+                    and not any(k in low for k in ("ceo", "analytics", "graph", "chart", "recall", "scenario", "senario", "possible question"))
+                )
+
+                # Decide which companion side panel (if any) to open alongside the AI reply
+                if any(k in low for k in ("spreadsheet", "excel", "sort client", "sort case", "sort by", "client table")):
+                    ui_panel = {"panel": "spreadsheet", "title": "Client Spreadsheet & Vault"}
+                elif role == "ceo" and any(k in low for k in ("ceo", "analytics", "graph", "chart", "kpi", "revenue", "approval rate", "recall", "metrics", "overview", "executive")):
+                    ui_panel = {"panel": "ceo_analytics", "title": "CEO Executive Analytics & Graphs"}
+                elif role == "ceo" and any(k in low for k in ("staff", "team", "create account", "new user", "add staff", "manage user", "logins")):
+                    ui_panel = {"panel": "team", "title": "Team & Staff Account Manager"}
+                elif any(k in low for k in ("open setting", "voice setting", "elevenlabs", "fish audio", "subscription", "codex", "claude", "chatgpt", "antigravity", "api key", "ollama", "composio", "clawlink", "mcp", "brand")):
+                    ui_panel = {"panel": "settings", "title": "Connections, AI & Voice Setup"}
+                elif any(k in low for k in ("obsidian", "vault", "wikilink")):
+                    note_path = f"Clients/{target_cid}.md" if target_cid and "client" in low else "Index.md"
+                    ui_panel = {"panel": "obsidian", "path": note_path, "title": f"Obsidian Vault — {note_path}"}
+                elif any(k in low for k in ("database", "sql", "manifest", "import")):
+                    tbl = "source_manifest" if "manifest" in low else ("gov_sources" if "source" in low else "clients")
+                    ui_panel = {"panel": "database", "table": tbl, "title": f"Database Explorer ({tbl})"}
+                elif any(k in low for k in ("pdf", "pica", "ds-5535", "ds5535", "ds-157", "ds157", "ds-156", "birreq", "passport form", "blueprint", "official doc", "show doc", "document")) and not any(k in low for k in ("generate", "draft", "create")):
+                    doc_key = _match_official_pdf(db, low)
+                    ui_panel = {"panel": "official_pdfs", "doc_key": doc_key, "title": "Official Government PDF Viewer"}
+                elif any(k in low for k in ("source", "scrape", "embassy link", "gov link", "website")):
+                    ui_panel = {"panel": "gov_sources", "title": "Official Scraped Gov Sources"}
+                elif any(k in low for k in ("all client", "list client", "pipeline", "kanban", "all case", "show case")):
+                    ui_panel = {"panel": "clients_list", "title": "Client Pipeline & Cases"}
+                elif target_cid:
+                    sub = "overview"
+                    if any(k in low for k in ("intake", "edit", "form", "questionn", "questiona", "follow-up", "followup", "folloup")):
+                        sub = "intake"
+                    elif any(k in low for k in ("interview", "mock", "predict", "freeze", "scenario", "senario", "possible question", "questions")):
+                        sub = "interview"
+                    elif any(k in low for k in ("roadmap", "image", "worksheet", "checklist", "letter", "docx", "generate", "draft", "approve", "asset", "file", "doc", "vault", "sign")):
+                        sub = "blueprints"
+                    elif any(k in low for k in ("journal", "history", "timeline", "log")):
+                        sub = "journal"
+                    ui_panel = {"panel": "client", "case_id": target_cid, "subview": sub, "title": f"Case {target_cid}"}
+
+                # Check if user requested a dynamic client data table / chart / sorted breakdown
+                data_table_payload = build_dynamic_data_table(db, msg)
+
+                if is_action_task:
+                    res = run_staff_agent_loop(
+                        db,
+                        msg,
+                        case_id=target_cid,
+                        actor=f"Consular AI ({user.full_name})",
+                        conversation_id=conv_id,
+                        history=history,
+                    )
+                    reply = res["reply"]
+                    tool_trace = res.get("tool_trace", [])
+                    provider = res["provider_used"]
+                    if res.get("created_assets") and target_cid:
+                        recent = (
+                            db.query(GeneratedAsset)
+                            .filter(GeneratedAsset.case_id == target_cid)
+                            .order_by(GeneratedAsset.id.desc())
+                            .limit(len(res["created_assets"]))
+                            .all()
+                        )
+                        created_assets = [
+                            {
+                                "id": a.id,
+                                "title": a.title,
+                                "filename": a.filename,
+                                "mime_type": a.mime_type,
+                                "approval_status": a.approval_status,
+                                "file_url": f"/api/assets/{a.id}/file",
+                            }
+                            for a in recent
+                        ]
+                        ui_panel = {
+                            "panel": "client",
+                            "case_id": target_cid,
+                            "subview": "blueprints",
+                            "preview_asset_id": recent[0].id if recent else None,
+                            "title": f"Draft Deliverables — {target_cid}",
+                        }
+                else:
+                    client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first() if target_cid else None
+                    extra_parts: list[str] = []
+                    if ui_panel:
+                        extra_parts.append(
+                            f"UI Action Already Performed: Opened the right-hand side panel '{ui_panel.get('title')}' "
+                            f"(panel={ui_panel.get('panel')}, subview={ui_panel.get('subview', 'default')})."
+                        )
+                    if data_table_payload:
+                        extra_parts.append(
+                            f"Interactive Data Table Already Rendered Below Your Reply: {data_table_payload['title']} ({data_table_payload['subtitle']}). "
+                            f"Summarize the key takeaways concisely without manually printing a huge raw table."
+                        )
+                    if ui_panel and ui_panel["panel"] == "ceo_analytics":
                         total = db.query(ClientCase).count()
                         approved = db.query(ClientCase).filter(ClientCase.outcome == "approved").count()
                         refused = db.query(ClientCase).filter(ClientCase.outcome == "refused").count()
-                        reply = (
-                            f"Opened **CEO Executive Analytics & Graphs** in the side panel ({total} total cases: {approved} approved, {refused} refused)."
-                        )
-                    else:
-                        reply = f"Opened **{ui_panel.get('title', 'Workspace Panel')}** in the side panel.\n\n{reply}"
+                        extra_parts.append(f"Live Agency Portfolio KPIs: Total={total} cases, Approved={approved}, Refused={refused}.")
+                    elif ui_panel and ui_panel["panel"] == "official_pdfs":
+                        docs = db.query(OfficialDocument).all()
+                        doc_list = ", ".join(f"{d.title} ({d.filename})" for d in docs[:10])
+                        extra_parts.append(f"Available Official Government PDFs & Blueprints in the side panel: {doc_list}.")
+                    elif ui_panel and ui_panel["panel"] in ("clients_list", "spreadsheet"):
+                        top_cases = db.query(ClientCase).order_by(ClientCase.updated_at.desc()).limit(10).all()
+                        case_list = ", ".join(f"{c.case_id} ({c.full_name or c.pseudonym}, {c.standing_score}%)" for c in top_cases)
+                        extra_parts.append(f"Recent Clients in Pipeline: {case_list}.")
+
+                    if client and any(k in low for k in ("questionn", "questiona", "import question", "show question")):
+                        if not any(f.follow_up_question for f in client.risk_flags):
+                            q_res = generate_dynamic_questionnaire(client.case_id, GenerateQuestionsRequest(focus=msg, count=5), user=user, db=db)
+                            questionnaire_payload = q_res["questionnaire"]
+                        else:
+                            questionnaire_payload = _serialize_questionnaire_payload(client)
+
+                    res = answer_customer_question(
+                        db,
+                        msg,
+                        client,
+                        conversation_id=conv_id,
+                        history=history,
+                        extra_context="\n".join(extra_parts),
+                    )
+                    reply = res["reply"]
+                    citations = res.get("citations", [])
+                    provider = res["provider_used"]
+
+                    if provider == "none-configured" and (ui_panel or data_table_payload):
+                        if data_table_payload:
+                            reply = f"**{data_table_payload['title']}** — {data_table_payload['subtitle']}. Click any row to open that client's profile or documents."
+                        elif ui_panel and ui_panel["panel"] == "client" and client:
+                            red_n = sum(1 for f in client.risk_flags if f.severity == "red" and not f.resolved)
+                            amber_n = sum(1 for f in client.risk_flags if f.severity == "amber" and not f.resolved)
+                            reply = (
+                                f"Opened **{client.case_id} — {client.full_name or client.pseudonym}** (`{client.visa_class}`) in the side panel.\n\n"
+                                f"- **Good Standing:** `{client.standing_score}%` ({client.denial_risk_level.upper()} risk — {red_n} Red, {amber_n} Amber)\n"
+                                f"- **Stage:** `{client.pipeline_stage.replace('_', ' ').title()}` | **DS-160:** `{client.ds160_confirmation_id or 'Pending'}`"
+                            )
+                        elif ui_panel and ui_panel["panel"] == "ceo_analytics":
+                            total = db.query(ClientCase).count()
+                            approved = db.query(ClientCase).filter(ClientCase.outcome == "approved").count()
+                            refused = db.query(ClientCase).filter(ClientCase.outcome == "refused").count()
+                            reply = f"Opened **CEO Executive Analytics & Graphs** in the side panel ({total} total cases: {approved} approved, {refused} refused)."
+                        elif ui_panel:
+                            reply = f"Opened **{ui_panel.get('title', 'Workspace Panel')}** in the side panel."
 
     meta_blob = {
         "tool_trace": tool_trace,
@@ -1006,6 +1255,7 @@ def unified_agent_command(
         "panel": ui_panel,
         "pending_action": pending_action_payload,
         "questionnaire": questionnaire_payload,
+        "data_table": data_table_payload,
     }
     db.add(
         ChatMessage(
@@ -1032,4 +1282,5 @@ def unified_agent_command(
         "ui_panel": ui_panel,
         "pending_action": pending_action_payload,
         "questionnaire": questionnaire_payload,
+        "data_table": data_table_payload,
     }

@@ -120,7 +120,65 @@ export interface ClientSummary {
   predictions_frozen: boolean;
   profile_tags: string[];
   service_package_usd: number;
+  occupation?: string;
+  employer_name?: string;
+  monthly_gross_jmd?: number | null;
+  monthly_net_jmd?: number | null;
+  us_destination?: string;
+  purpose_of_trip?: string;
+  passport_expiry?: string;
+  ds160_confirmation_id?: string;
+  document_count?: number;
+  doc_previews?: Array<{
+    id: number;
+    source_type: "vault" | "asset";
+    title: string;
+    category: string;
+    mime_type: string;
+    file_url: string;
+  }>;
   updated_at: string | null;
+}
+
+export interface ClientDocumentItem {
+  id: number;
+  case_id: string | null;
+  category: string;
+  title: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  page_count: number;
+  extracted_fields: Record<string, unknown>;
+  ai_summary: string;
+  parent_doc_id: number | null;
+  version_number: number;
+  visible_to_client: boolean;
+  uploaded_by: string;
+  file_url: string;
+  needs_client_assignment?: boolean;
+  compliance_alerts?: string[];
+  created_at: string | null;
+}
+
+export interface StudioTarget {
+  source_type: "vault" | "asset" | "official";
+  source_id: string;
+  case_id?: string | null;
+  title?: string;
+}
+
+export interface ChatDataTablePayload {
+  title: string;
+  subtitle: string;
+  sort_by: string;
+  sort_dir: string;
+  columns: Array<{ key: string; label: string }>;
+  rows: Array<Record<string, unknown>>;
+  chart?: {
+    title: string;
+    items: Array<{ label: string; value: number; color: string }>;
+  };
 }
 
 export interface ClientDetail extends ClientSummary {
@@ -152,6 +210,7 @@ export interface ClientDetail extends ClientSummary {
   risk_flags: RiskFlag[];
   predictions: InterviewPrediction[];
   assets: GeneratedAsset[];
+  documents?: ClientDocumentItem[];
   facts?: ProfileFact[];
   interview_events?: InterviewEventItem[];
   journal?: JournalEntry[];

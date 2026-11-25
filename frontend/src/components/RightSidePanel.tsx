@@ -20,23 +20,34 @@ import {
   BookOpen,
   Lightbulb,
   MessageSquarePlus,
+  Maximize2,
+  ArrowUpDown,
+  FileSpreadsheet,
+  FolderOpen,
+  Package,
+  Scissors,
+  Zap,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type {
   BrandingConfig,
   ChatQuestionnairePayload,
   ClientDetail,
+  ClientDocumentItem,
   ClientSummary,
   GovSourceItem,
   OfficialDocItem,
+  StudioTarget,
   UserAccount,
   VaultNoteMeta,
 } from "@/lib/types";
+import { ClientSpreadsheetView } from "./ClientSpreadsheetView";
 
 export interface PanelRequest {
   panel:
     | "ceo_analytics"
     | "clients_list"
+    | "spreadsheet"
     | "client"
     | "customer_case"
     | "official_pdfs"
@@ -63,6 +74,7 @@ interface RightSidePanelProps {
   onNavigatePanel: (req: PanelRequest) => void;
   onSelectCaseForChat: (caseId: string) => void;
   onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
+  onOpenStudio?: (target: StudioTarget) => void;
   onBrandingUpdated: (b: BrandingConfig) => void;
   onClose: () => void;
 }
@@ -76,6 +88,7 @@ export function RightSidePanel({
   onNavigatePanel,
   onSelectCaseForChat,
   onImportQuestionnaireToChat,
+  onOpenStudio,
   onBrandingUpdated,
   onClose,
 }: RightSidePanelProps) {
@@ -132,6 +145,17 @@ export function RightSidePanel({
               onSelectCaseForChat(cid);
               onNavigatePanel({ panel: "client", case_id: cid, subview: "overview", title: `Case ${cid}` });
             }}
+            onOpenSpreadsheet={() => onNavigatePanel({ panel: "spreadsheet", title: "Client Spreadsheet & Vault" })}
+          />
+        )}
+        {request.panel === "spreadsheet" && isStaffOrCeo && (
+          <ClientSpreadsheetView
+            refreshNonce={refreshNonce}
+            onOpenProfile={(cid) => {
+              onSelectCaseForChat(cid);
+              onNavigatePanel({ panel: "client", case_id: cid, subview: "overview", title: `Case ${cid}` });
+            }}
+            onOpenStudio={(t) => onOpenStudio?.(t)}
           />
         )}
         {(request.panel === "client" || request.panel === "customer_case") && (
@@ -142,11 +166,17 @@ export function RightSidePanel({
             isStaffOrCeo={isStaffOrCeo}
             refreshNonce={refreshNonce}
             onImportQuestionnaireToChat={onImportQuestionnaireToChat}
+            onOpenStudio={onOpenStudio}
             onOpenObsidian={(path) => onNavigatePanel({ panel: "obsidian", path, title: `Obsidian — ${path}` })}
           />
         )}
         {request.panel === "official_pdfs" && (
-          <OfficialPdfsSubPanel initialDocKey={request.doc_key} canUpload={isStaffOrCeo} />
+          <OfficialPdfsSubPanel
+            initialDocKey={request.doc_key}
+            canUpload={isStaffOrCeo}
+            activeCaseId={request.case_id}
+            onOpenStudio={onOpenStudio}
+          />
         )}
         {request.panel === "gov_sources" && <GovSourcesSubPanel canScrape={isStaffOrCeo} />}
         {request.panel === "database" && isStaffOrCeo && <DatabaseSubPanel initialTable={request.table || "clients"} />}
@@ -306,10 +336,18 @@ function CeoAnalyticsSubPanel({ onOpenCase }: { onOpenCase: (cid: string) => voi
   );
 }
 
-/* ── 2. CLEAN CLIENTS LIST (ACTIVE vs HISTORICAL REFERENCE) ───────────────── */
-function ClientsListSubPanel({ onOpenCase }: { onOpenCase: (cid: string) => void }) {
+/* ── 2. CLEAN CLIENTS LIST (ACTIVE vs HISTORICAL + EASY SORT TAB) ─────────── */
+function ClientsListSubPanel({
+  onOpenCase,
+  onOpenSpreadsheet,
+}: {
+  onOpenCase: (cid: string) => void;
+  onOpenSpreadsheet: () => void;
+}) {
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [filterMode, setFilterMode] = useState<"active" | "historical" | "all">("active");
+  const [sortBy, setSortBy] = useState("updated_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
@@ -318,12 +356,22 @@ function ClientsListSubPanel({ onOpenCase }: { onOpenCase: (cid: string) => void
   const [newPurpose, setNewPurpose] = useState("");
 
   const load = () => {
-    apiFetch<ClientSummary[]>(`/api/clients${search ? `?search=${encodeURIComponent(search)}` : ""}`)
+    const qs = new URLSearchParams({ sort_by: sortBy, sort_dir: sortDir });
+    if (search.trim()) qs.set("search", search.trim());
+    apiFetch<ClientSummary[]>(`/api/clients?${qs.toString()}`)
       .then(setClients)
       .catch(() => {});
   };
 
-  useEffect(load, [search]);
+  useEffect(load, [search, sortBy, sortDir]);
+
+  const toggleSort = (col: string) => {
+    if (sortBy === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    else {
+      setSortBy(col);
+      setSortDir(col === "full_name" || col === "embassy_interview_date" ? "asc" : "desc");
+    }
+  };
 
   const filtered = clients.filter((c) => {
     const isRef = (c.full_name || "").startsWith("Reference Case") || (c.full_name || "").startsWith("Case C00");
@@ -349,10 +397,41 @@ function ClientsListSubPanel({ onOpenCase }: { onOpenCase: (cid: string) => void
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <input className="g-input text-xs flex-1" placeholder="Search cases or names..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="g-input text-xs flex-1" placeholder="Search cases, names, parish..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <button onClick={onOpenSpreadsheet} className="g-btn-ghost px-2.5 py-2 text-xs inline-flex items-center gap-1 text-emerald-300 shrink-0" title="Open Editable Spreadsheet">
+          <FileSpreadsheet className="w-3.5 h-3.5" /> Sheet
+        </button>
         <button onClick={() => setShowNew(!showNew)} className="g-btn-primary px-3 py-2 text-xs inline-flex items-center gap-1 shrink-0">
           <Plus className="w-3.5 h-3.5" /> New
         </button>
+      </div>
+
+      {/* Easy Sort Tab Bar */}
+      <div className="flex items-center gap-1 overflow-x-auto pb-0.5 text-[11px]">
+        <span className="text-slate-500 inline-flex items-center gap-1 mr-1 shrink-0">
+          <ArrowUpDown className="w-3 h-3" /> Sort:
+        </span>
+        {[
+          ["updated_at", "Recent"],
+          ["standing_score", "Standing"],
+          ["denial_risk_level", "Risk"],
+          ["full_name", "Name"],
+          ["monthly_gross_jmd", "Salary"],
+          ["embassy_interview_date", "Interview"],
+        ].map(([id, lbl]) => {
+          const act = sortBy === id;
+          return (
+            <button
+              key={id}
+              onClick={() => toggleSort(id)}
+              className={`px-2 py-0.5 rounded-full border whitespace-nowrap transition ${
+                act ? "bg-blue-500/20 border-blue-400/40 text-blue-200 font-semibold" : "bg-white/[0.03] border-white/10 text-slate-400 hover:text-white"
+              }`}
+            >
+              {lbl} {act ? (sortDir === "asc" ? "↑" : "↓") : ""}
+            </button>
+          );
+        })}
       </div>
 
       <div className="flex gap-1 bg-black/30 p-1 rounded-xl border border-white/10 text-xs">
@@ -430,6 +509,7 @@ function ClientInspectorSubPanel({
   isStaffOrCeo,
   refreshNonce = 0,
   onImportQuestionnaireToChat,
+  onOpenStudio,
   onOpenObsidian,
 }: {
   caseId: string;
@@ -438,6 +518,7 @@ function ClientInspectorSubPanel({
   isStaffOrCeo: boolean;
   refreshNonce?: number;
   onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
+  onOpenStudio?: (target: StudioTarget) => void;
   onOpenObsidian: (p: string) => void;
 }) {
   const [client, setClient] = useState<ClientDetail | null>(null);
@@ -452,6 +533,10 @@ function ClientInspectorSubPanel({
   const [genCount, setGenCount] = useState("5");
   const [genBusy, setGenBusy] = useState(false);
   const [openTipIds, setOpenTipIds] = useState<Record<number, boolean>>({});
+  const [vaultCat, setVaultCat] = useState("all");
+  const [officialDocs, setOfficialDocs] = useState<OfficialDocItem[]>([]);
+  const [fillDocKey, setFillDocKey] = useState("");
+  const [vaultBusy, setVaultBusy] = useState(false);
 
   useEffect(() => setView(initialSubview || "overview"), [initialSubview, caseId]);
   useEffect(() => {
@@ -491,6 +576,17 @@ function ClientInspectorSubPanel({
   useEffect(() => {
     load().catch(() => {});
   }, [caseId, refreshNonce]);
+
+  useEffect(() => {
+    if (isStaffOrCeo) {
+      apiFetch<OfficialDocItem[]>("/api/documents/official")
+        .then((list) => {
+          setOfficialDocs(list);
+          if (!fillDocKey && list.length > 0) setFillDocKey(list[0].doc_key);
+        })
+        .catch(() => {});
+    }
+  }, [isStaffOrCeo]);
 
   const flash = (m: string) => {
     setMsg(m);
@@ -882,9 +978,169 @@ function ClientInspectorSubPanel({
         </div>
       )}
 
-      {/* SUBVIEW: DOCUMENTS, VISUAL ROADMAP PNG & APPROVAL GATE */}
+      {/* SUBVIEW: CLIENT DOCUMENT & IMAGE VAULT, OFFICIAL AUTO-FILL, 92% RGD & EMBASSY PACKET */}
       {(view === "blueprints" || view === "docs") && (
-        <div className="space-y-3">
+        <div className="space-y-3.5">
+          {/* Categorized Client Vault Upload + Official Form AI Auto-Fill + 1-Click Embassy Packet */}
+          {isStaffOrCeo && (
+            <div className="g-card p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-white inline-flex items-center gap-1.5">
+                  <FolderOpen className="w-3.5 h-3.5 text-blue-400" /> Client Document &amp; Image Vault ({(client.documents || []).length})
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <label className="g-btn-primary px-2.5 py-1 text-[11px] inline-flex items-center gap-1 cursor-pointer">
+                    <Upload className="w-3 h-3" /> {vaultBusy ? "Scanning…" : "Upload & Scan"}
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.png,.jpg,.jpeg,.webp,.docx"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const fls = Array.from(e.target.files || []);
+                        if (!fls.length) return;
+                        setVaultBusy(true);
+                        try {
+                          for (const f of fls) {
+                            const fd = new FormData();
+                            fd.append("file", f);
+                            fd.append("auto_scan", "true");
+                            await apiFetch(`/api/clients/${client.case_id}/documents/upload`, { method: "POST", body: fd });
+                          }
+                          await load();
+                          flash(`Uploaded & AI-scanned ${fls.length} file(s) into ${client.case_id}'s Vault!`);
+                        } finally {
+                          setVaultBusy(false);
+                          e.target.value = "";
+                        }
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const r = await apiFetch<{ id: number; included_count: number }>(`/api/clients/${client.case_id}/embassy-packet`, {
+                        method: "POST",
+                        body: JSON.stringify({ bundle_format: "pdf" }),
+                      });
+                      setPreviewId(r.id);
+                      await load();
+                      flash(`Exported Embassy Packet PDF (${r.included_count} doc(s))!`);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600/40 border border-emerald-400/30 text-emerald-200 text-[11px] font-semibold inline-flex items-center gap-1"
+                    title="Merge approved forms & vault docs into 1 printable Embassy Packet PDF"
+                  >
+                    <Package className="w-3 h-3" /> Packet PDF
+                  </button>
+                </div>
+              </div>
+
+              {/* Select Official Gov PDF -> AI Auto-Fill into Client Vault */}
+              {officialDocs.length > 0 && (
+                <div className="flex gap-1.5">
+                  <select className="g-input text-[11px] py-1 flex-1" value={fillDocKey} onChange={(e) => setFillDocKey(e.target.value)}>
+                    {officialDocs.map((d) => (
+                      <option key={d.doc_key} value={d.doc_key}>
+                        [{d.agency}] {d.title}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={vaultBusy || !fillDocKey}
+                    onClick={async () => {
+                      setVaultBusy(true);
+                      try {
+                        const r = await apiFetch<{ document: ClientDocumentItem }>(`/api/clients/${client.case_id}/documents/fill-official`, {
+                          method: "POST",
+                          body: JSON.stringify({ doc_key: fillDocKey }),
+                        });
+                        await load();
+                        flash(`AI-filled '${r.document.title}' — opening Full-Screen Studio!`);
+                        onOpenStudio?.({ source_type: "vault", source_id: String(r.document.id), case_id: client.case_id, title: r.document.title });
+                      } finally {
+                        setVaultBusy(false);
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/30 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 shrink-0"
+                  >
+                    <Sparkles className="w-3 h-3" /> AI Fill Form
+                  </button>
+                </div>
+              )}
+
+              {/* Category Filter Pills */}
+              <div className="flex gap-1 overflow-x-auto text-[10px] pb-0.5">
+                {[
+                  ["all", "All"],
+                  ["passport_id", "Passport / ID"],
+                  ["financial_payslips", "Financial"],
+                  ["rgd_civil", "RGD Civil"],
+                  ["embassy_forms", "Embassy Forms"],
+                  ["photos_other", "Photos / Other"],
+                ].map(([cid, lbl]) => (
+                  <button
+                    key={cid}
+                    onClick={() => setVaultCat(cid)}
+                    className={`px-2 py-0.5 rounded-full whitespace-nowrap border ${
+                      vaultCat === cid ? "bg-blue-500/20 border-blue-400/40 text-blue-200 font-semibold" : "bg-white/[0.03] border-white/10 text-slate-400"
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+
+              {/* Vault Documents List */}
+              {(client.documents || []).filter((d) => vaultCat === "all" || d.category === vaultCat).length > 0 && (
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
+                  {(client.documents || [])
+                    .filter((d) => vaultCat === "all" || d.category === vaultCat)
+                    .map((d) => (
+                      <div key={d.id} className="p-2 rounded-xl bg-white/[0.03] border border-white/10 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-white truncate">
+                              {d.title}{" "}
+                              {d.version_number > 1 && <span className="text-[10px] text-emerald-300 font-mono">v{d.version_number}</span>}
+                            </div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                              {d.category.replace(/_/g, " ")} • {d.ai_summary || d.filename}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => onOpenStudio?.({ source_type: "vault", source_id: String(d.id), case_id: client.case_id, title: d.title })}
+                              className="px-2 py-1 rounded-lg bg-blue-600/25 hover:bg-blue-600/40 text-blue-200 text-[10px] font-semibold inline-flex items-center gap-1"
+                              title="Open Full-Screen Preview, Text Editor & Signature Studio"
+                            >
+                              <Maximize2 className="w-3 h-3" /> Edit/Sign
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await apiFetch(`/api/documents/vault/${d.id}/rgd-92`, { method: "POST" });
+                                await load();
+                                flash("Created 92% RGD Kingston-compliant PDF in Vault!");
+                              }}
+                              className="p-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300"
+                              title="1-Click 92% RGD Photocopy Scale Converter"
+                            >
+                              <Scissors className="w-3 h-3" />
+                            </button>
+                            <a href={d.file_url} download={d.filename} className="p-1 rounded-lg bg-white/5 hover:bg-white/15 text-slate-300" title="Download">
+                              <Download className="w-3 h-3" />
+                            </a>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {isStaffOrCeo && (
             <div className="grid grid-cols-2 gap-2">
               {[
@@ -926,6 +1182,17 @@ function ClientInspectorSubPanel({
                   <div className="text-[10px] text-slate-400">{a.approval_status.replace("_", " ").toUpperCase()}</div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenStudio?.({ source_type: "asset", source_id: String(a.id), case_id: client.case_id, title: a.title });
+                    }}
+                    className="px-2 py-1 rounded-lg bg-blue-600/25 hover:bg-blue-600/40 text-blue-200 text-[10px] font-semibold inline-flex items-center gap-1"
+                    title="Full-Screen Preview, Edit & Sign"
+                  >
+                    <Maximize2 className="w-3 h-3" /> Studio
+                  </button>
                   <a
                     href={`/api/assets/${a.id}/file`}
                     download={a.filename}
@@ -1022,7 +1289,17 @@ function ClientInspectorSubPanel({
 }
 
 /* ── 4. OFFICIAL GOVERNMENT PDF VIEWER ─────────────────────────────────────── */
-function OfficialPdfsSubPanel({ initialDocKey, canUpload }: { initialDocKey?: string; canUpload: boolean }) {
+function OfficialPdfsSubPanel({
+  initialDocKey,
+  canUpload,
+  activeCaseId,
+  onOpenStudio,
+}: {
+  initialDocKey?: string;
+  canUpload: boolean;
+  activeCaseId?: string;
+  onOpenStudio?: (target: StudioTarget) => void;
+}) {
   const [docs, setDocs] = useState<OfficialDocItem[]>([]);
   const [selectedKey, setSelectedKey] = useState(initialDocKey || "");
   const [showUpload, setShowUpload] = useState(false);
@@ -1093,6 +1370,20 @@ function OfficialPdfsSubPanel({ initialDocKey, canUpload }: { initialDocKey?: st
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold text-white">{current.title}</span>
               <div className="flex gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenStudio?.({
+                      source_type: "official",
+                      source_id: current.doc_key,
+                      case_id: activeCaseId || null,
+                      title: current.title,
+                    })
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold inline-flex items-center gap-1"
+                >
+                  <Maximize2 className="w-3 h-3" /> Full-Screen Edit &amp; Sign
+                </button>
                 {current.source_url && (
                   <a href={current.source_url} target="_blank" rel="noreferrer" className="g-btn-ghost px-2 py-1 text-[11px] inline-flex items-center gap-1">
                     Source <ExternalLink className="w-3 h-3" />
@@ -1402,10 +1693,14 @@ function SettingsSubPanel({
   const [claudeTok, setClaudeTok] = useState("");
   const [showClaudeBox, setShowClaudeBox] = useState(false);
 
-  // API key quick save
-  const [apiProv, setApiProv] = useState("openai");
+  // API key & ClawLink / Composio quick save
+  const [apiProv, setApiProv] = useState("gemini");
   const [apiKeyVal, setApiKeyVal] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
+  const [composioKeyInput, setComposioKeyInput] = useState("");
+  const [clawUrl, setClawUrl] = useState("");
+  const [clawToken, setClawToken] = useState("");
+  const [clawChannel, setClawChannel] = useState("");
 
   // Voice settings
   const [voiceEngine, setVoiceEngine] = useState("edge");
@@ -1429,6 +1724,8 @@ function SettingsSubPanel({
     setHub(h);
     setVoice(v);
     setOllamaUrl(h?.ai_providers?.ollama?.base_url || "http://localhost:11434");
+    setClawUrl(h?.clawlink?.base_url || "");
+    setClawChannel(h?.clawlink?.channel || "");
     setVoiceEngine(v?.engine || "edge");
     setVoicePersona(v?.default_persona || "advisor_ja");
     setElevenVoiceId(v?.elevenlabs_voice_id || "JBFqnCBsd6RMkjVDRZzb");
@@ -1536,54 +1833,173 @@ function SettingsSubPanel({
         <div className="p-2.5 rounded-xl bg-blue-500/15 border border-blue-400/30 text-xs text-blue-200">{status}</div>
       )}
 
-      {/* 1. SUBSCRIPTION LOGINS (ChatGPT Codex, Claude Pro/Max, Antigravity) */}
-      <div className="g-card p-3.5 space-y-3">
+      {/* 1. RECOMMENDED: CHATGPT / OPENAI CODEX OAUTH */}
+      <div className="g-card p-3.5 space-y-2.5 border-emerald-400/35">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-white">1. AI Subscriptions (Sign In With Your Account)</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-white">1. ChatGPT / OpenAI OAuth</span>
+            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-bold">
+              RECOMMENDED
+            </span>
+          </div>
+          {subItems.find((i: any) => i.provider === "openai-codex")?.connected ? (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+          ) : (
+            <button
+              onClick={async () => {
+                await startCodex();
+              }}
+              className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0"
+            >
+              1-Click Sign In with ChatGPT
+            </button>
+          )}
+        </div>
+        <div className="text-[11px] text-slate-400">
+          Fastest setup: uses your ChatGPT Plus / Pro account via device OAuth (no API billing needed). You can also paste any API key or MCP link directly in chat!
+        </div>
+        {codexFlow && codexFlow.status === "pending" && (
+          <div className="p-2.5 rounded-lg bg-black/40 border border-blue-400/30 space-y-2 text-xs">
+            <div className="text-slate-300">Copy this code &amp; approve on OpenAI&apos;s sign-in page:</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <code className="text-base font-bold tracking-widest text-amber-300">{codexFlow.user_code}</code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(codexFlow.user_code);
+                    setStatus("Copied code! Paste it on OpenAI's page.");
+                  }}
+                  className="p-1 rounded bg-white/10 hover:bg-white/20 text-slate-200"
+                  title="Copy Code"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <a
+                href={codexFlow.verification_uri}
+                target="_blank"
+                rel="noreferrer"
+                className="g-btn-primary px-3 py-1.5 text-[11px] inline-flex items-center gap-1"
+              >
+                Open OpenAI Sign-In <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+            <div className="text-[10px] text-slate-400">Waiting for approval… connects automatically in seconds.</div>
+          </div>
+        )}
+      </div>
+
+      {/* 2. COMPOSIO APPS (GMAIL, GOOGLE SHEETS, DOCS, MICROSOFT 365 / ONEDRIVE) */}
+      <div className="g-card p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-white">2. Composio Hub (Gmail, Google Sheets, Docs, Microsoft 365)</span>
+          {hub?.composio?.api_key_configured && (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">Key Saved</span>
+          )}
+        </div>
+        <div className="flex gap-1.5">
+          <input
+            type="password"
+            value={composioKeyInput}
+            onChange={(e) => setComposioKeyInput(e.target.value)}
+            placeholder={hub?.composio?.api_key_configured ? `Saved (${hub.composio.api_key_masked}) — paste to update` : "Paste Composio API Key (or paste right in chat!)"}
+            className="g-input text-xs flex-1"
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              if (!composioKeyInput.trim()) return;
+              const updated = await apiFetch("/api/settings/composio", { method: "POST", body: JSON.stringify({ api_key: composioKeyInput.trim() }) });
+              setHub({ ...hub, composio: updated });
+              setComposioKeyInput("");
+              setStatus("Composio API key saved!");
+            }}
+            className="g-btn-primary px-3 text-xs shrink-0"
+          >
+            Save
+          </button>
+        </div>
+        <div className="space-y-1">
+          {(hub?.composio?.apps || []).map((a: any) => (
+            <div key={a.app_id} className="flex items-center justify-between text-xs py-1">
+              <span className="text-slate-300">{a.name}</span>
+              <button
+                onClick={async () => {
+                  const updated = await apiFetch("/api/settings/composio", {
+                    method: "POST",
+                    body: JSON.stringify({ toggle_app_id: a.app_id, connected: !a.connected }),
+                  });
+                  setHub({ ...hub, composio: updated });
+                }}
+                className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
+                  a.connected ? "bg-emerald-500/20 text-emerald-300" : "bg-white/10 text-slate-300"
+                }`}
+              >
+                {a.connected ? "Connected" : "Connect"}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 3. CLAWLINK EASY CONNECTION */}
+      <div className="g-card p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-white inline-flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-amber-300" /> 3. ClawLink Connection
+          </span>
+          {hub?.clawlink?.configured && (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">Connected</span>
+          )}
+        </div>
+        <div className="text-[11px] text-slate-400">
+          Connect your ClawLink endpoint &amp; token here — or simply paste your ClawLink URL/token directly into chat.
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <input className="g-input text-xs" placeholder="ClawLink URL (https://...)" value={clawUrl} onChange={(e) => setClawUrl(e.target.value)} />
+          <input
+            className="g-input text-xs"
+            type="password"
+            placeholder={hub?.clawlink?.token_masked ? `Token (${hub.clawlink.token_masked})` : "ClawLink Token / Secret"}
+            value={clawToken}
+            onChange={(e) => setClawToken(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-2">
+          <input className="g-input text-xs flex-1" placeholder="Optional Channel / Workspace ID" value={clawChannel} onChange={(e) => setClawChannel(e.target.value)} />
+          <button
+            type="button"
+            onClick={async () => {
+              const r = await apiFetch<{ note: string }>("/api/settings/clawlink", {
+                method: "POST",
+                body: JSON.stringify({ base_url: clawUrl, token: clawToken || undefined, channel: clawChannel }),
+              });
+              setClawToken("");
+              setStatus(`ClawLink: ${r.note}`);
+              loadAll();
+            }}
+            className="g-btn-primary px-3.5 text-xs shrink-0"
+          >
+            Connect &amp; Test
+          </button>
+        </div>
+      </div>
+
+      {/* 4. OTHER OAUTH SUBSCRIPTIONS (CLAUDE PRO/MAX & ANTIGRAVITY) */}
+      <div className="g-card p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-white">4. Other OAuth Subscriptions (Claude &amp; Antigravity)</span>
           <button
             onClick={async () => {
               const r = await apiFetch<{ count: number; imported: string[] }>("/api/oauth/import-local", { method: "POST" });
-              setStatus(r.count ? `Auto-imported local sign-in(s): ${r.imported.join(", ")}` : "No local CLI tokens found on this PC — use Sign In buttons below.");
+              setStatus(r.count ? `Auto-imported local sign-in(s): ${r.imported.join(", ")}` : "No local CLI tokens found on this PC.");
               loadAll();
             }}
             className="text-[11px] text-blue-400 hover:underline"
           >
             Auto-Detect Local Sign-In
           </button>
-        </div>
-
-        {/* ChatGPT / Codex Subscription */}
-        <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-2">
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <div>
-              <div className="font-semibold text-white">ChatGPT / OpenAI Codex Subscription</div>
-              <div className="text-[11px] text-slate-400">Uses your ChatGPT Plus / Pro account via device OAuth</div>
-            </div>
-            {subItems.find((i: any) => i.provider === "openai-codex")?.connected ? (
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
-            ) : (
-              <button onClick={startCodex} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
-                Sign In with ChatGPT
-              </button>
-            )}
-          </div>
-          {codexFlow && codexFlow.status === "pending" && (
-            <div className="p-2.5 rounded-lg bg-black/40 border border-blue-400/30 space-y-2 text-xs">
-              <div className="text-slate-300">Enter this code on OpenAI&apos;s sign-in page:</div>
-              <div className="flex items-center justify-between gap-2">
-                <code className="text-base font-bold tracking-widest text-amber-300">{codexFlow.user_code}</code>
-                <a
-                  href={codexFlow.verification_uri}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="g-btn-primary px-3 py-1.5 text-[11px] inline-flex items-center gap-1"
-                >
-                  Open OpenAI Sign-In <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-              <div className="text-[10px] text-slate-400">Waiting for approval… auto-detects in a few seconds.</div>
-            </div>
-          )}
         </div>
 
         {/* Claude Pro / Max Subscription */}
@@ -1603,13 +2019,7 @@ function SettingsSubPanel({
           </div>
           {showClaudeBox && (
             <div className="flex gap-2">
-              <input
-                className="g-input text-xs"
-                type="password"
-                placeholder="Paste Claude OAuth / setup-token..."
-                value={claudeTok}
-                onChange={(e) => setClaudeTok(e.target.value)}
-              />
+              <input className="g-input text-xs" type="password" placeholder="Paste Claude OAuth / setup-token..." value={claudeTok} onChange={(e) => setClaudeTok(e.target.value)} />
               <button
                 onClick={async () => {
                   await apiFetch("/api/oauth/claude-token", { method: "POST", body: JSON.stringify({ token: claudeTok }) });
@@ -1630,8 +2040,8 @@ function SettingsSubPanel({
         <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/10 space-y-2">
           <div className="flex items-center justify-between gap-2 text-xs">
             <div>
-              <div className="font-semibold text-white">Antigravity (Google OAuth)</div>
-              <div className="text-[11px] text-slate-400">Sign in with your Google Antigravity account</div>
+              <div className="font-semibold text-white">Antigravity (Google OAuth / CLI)</div>
+              <div className="text-[11px] text-slate-400">Sign in with your Google Antigravity account or local `agy.exe`</div>
             </div>
             {subItems.find((i: any) => i.provider === "antigravity")?.connected ? (
               <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
@@ -1647,22 +2057,15 @@ function SettingsSubPanel({
                 1. Open Google OAuth Sign-In <ExternalLink className="w-3 h-3" />
               </a>
               <div className="flex gap-2">
-                <input
-                  className="g-input text-xs"
-                  placeholder="2. Paste redirected URL or auth code here..."
-                  value={agyCodeInput}
-                  onChange={(e) => setAgyCodeInput(e.target.value)}
-                />
-                <button onClick={finishAntigravity} className="g-btn-primary px-3 text-xs shrink-0">
-                  Link
-                </button>
+                <input className="g-input text-xs" placeholder="2. Paste redirected URL or auth code here..." value={agyCodeInput} onChange={(e) => setAgyCodeInput(e.target.value)} />
+                <button onClick={finishAntigravity} className="g-btn-primary px-3 text-xs shrink-0">Link</button>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* 2. CLOUD API KEYS & LOCAL OLLAMA */}
+      {/* 5. CLOUD API KEYS & LOCAL OLLAMA */}
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -1684,15 +2087,15 @@ function SettingsSubPanel({
         }}
         className="g-card p-3.5 space-y-2.5"
       >
-        <div className="text-xs font-semibold text-white">2. Local Ollama &amp; Cloud API Keys (Grok, OpenAI, Claude, Gemini, OpenRouter)</div>
+        <div className="text-xs font-bold text-white">5. Cloud API Keys &amp; Local Ollama (or paste key directly in chat!)</div>
         <div className="grid grid-cols-1 sm:grid-cols-[145px_1fr_auto] gap-2">
           <select className="g-input text-xs" value={apiProv} onChange={(e) => setApiProv(e.target.value)}>
-            <option value="ollama">Local Ollama</option>
+            <option value="gemini">Google Gemini</option>
             <option value="openai">OpenAI API</option>
             <option value="anthropic">Anthropic API</option>
-            <option value="gemini">Google Gemini</option>
             <option value="xai_grok">xAI Grok</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="ollama">Local Ollama</option>
           </select>
           {apiProv === "ollama" ? (
             <input className="g-input text-xs min-w-0" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" />
@@ -1782,29 +2185,8 @@ function SettingsSubPanel({
         </code>
       </div>
 
-      {/* 5. COMPOSIO + WHITE-LABEL BRANDING */}
-      <div className="g-card p-3.5 space-y-2">
-        <div className="text-xs font-semibold text-white">5. Composio Apps (Gmail, Sheets, Docs, MS 365)</div>
-        {(hub?.composio?.apps || []).map((a: any) => (
-          <div key={a.app_id} className="flex items-center justify-between text-xs py-1">
-            <span className="text-slate-300">{a.name}</span>
-            <button
-              onClick={async () => {
-                const updated = await apiFetch("/api/settings/composio", {
-                  method: "POST",
-                  body: JSON.stringify({ toggle_app_id: a.app_id, connected: !a.connected }),
-                });
-                setHub({ ...hub, composio: updated });
-              }}
-              className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
-                a.connected ? "bg-emerald-500/20 text-emerald-300" : "bg-white/10 text-slate-300"
-              }`}
-            >
-              {a.connected ? "Connected" : "Connect"}
-            </button>
-          </div>
-        ))}
-      </div>
+      {/* 6. VOICE ENGINE, MCP & WHITE-LABEL BRANDING */}
+      {/* (Duplicate Composio card removed — Composio is now promoted to #2 above!) */}
 
       {isCeo && (
         <form

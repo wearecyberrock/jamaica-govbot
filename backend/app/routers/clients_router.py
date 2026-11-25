@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -14,6 +18,7 @@ from app.config import decrypt_value, encrypt_value
 from app.database import get_db
 from app.models import (
     ClientCase,
+    ClientDocument,
     GeneratedAsset,
     InterviewEvent,
     InterviewPrediction,
@@ -22,6 +27,7 @@ from app.models import (
     RiskFlag,
     User,
 )
+from app.services.connectors import import_clients_from_csv
 from app.services.obsidian import sync_client_to_obsidian
 from app.services.risk_engine import evaluate_client_standing, generate_ranked_predictions
 
@@ -59,6 +65,36 @@ def serialize_client_summary(c: ClientCase) -> dict[str, Any]:
         "predictions_frozen": c.predictions_frozen,
         "profile_tags": _safe_json(c.profile_tags_json, []),
         "service_package_usd": c.service_package_usd,
+        "occupation": c.occupation,
+        "employer_name": c.employer_name,
+        "monthly_gross_jmd": c.monthly_gross_jmd,
+        "monthly_net_jmd": c.monthly_net_jmd,
+        "us_destination": c.us_destination,
+        "purpose_of_trip": c.purpose_of_trip,
+        "passport_expiry": c.passport_expiry,
+        "ds160_confirmation_id": c.ds160_confirmation_id,
+        "document_count": len(c.documents) + len(c.assets),
+        "doc_previews": [
+            {
+                "id": d.id,
+                "source_type": "vault",
+                "title": d.title,
+                "category": d.category,
+                "mime_type": d.mime_type,
+                "file_url": f"/api/documents/vault/{d.id}/file",
+            }
+            for d in sorted(c.documents, key=lambda x: x.id, reverse=True)[:4]
+        ] + [
+            {
+                "id": a.id,
+                "source_type": "asset",
+                "title": a.title,
+                "category": "generated",
+                "mime_type": a.mime_type,
+                "file_url": f"/api/assets/{a.id}/file",
+            }
+            for a in sorted(c.assets, key=lambda x: x.id, reverse=True)[:2]
+        ],
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
 
@@ -140,6 +176,28 @@ def serialize_client_detail(c: ClientCase, include_internal: bool = True) -> dic
                 }
                 for a in sorted(c.assets, key=lambda x: x.id, reverse=True)
                 if include_internal or (a.approval_status == "approved" and a.visible_to_client)
+            ],
+            "documents": [
+                {
+                    "id": d.id,
+                    "case_id": d.case_id,
+                    "category": d.category,
+                    "title": d.title,
+                    "filename": d.filename,
+                    "mime_type": d.mime_type,
+                    "size_bytes": d.size_bytes,
+                    "page_count": d.page_count,
+                    "extracted_fields": _safe_json(d.extracted_fields_json, {}),
+                    "ai_summary": d.ai_summary,
+                    "parent_doc_id": d.parent_doc_id,
+                    "version_number": d.version_number,
+                    "visible_to_client": d.visible_to_client,
+                    "uploaded_by": d.uploaded_by,
+                    "file_url": f"/api/documents/vault/{d.id}/file",
+                    "created_at": d.created_at.isoformat() if d.created_at else None,
+                }
+                for d in sorted(c.documents, key=lambda x: x.id, reverse=True)
+                if include_internal or d.visible_to_client
             ],
         }
     )
@@ -270,12 +328,23 @@ class AddProfileFactRequest(BaseModel):
 def list_clients(
     stage: str | None = None,
     search: str | None = None,
+    risk: str | None = None,
+    visa_class: str | None = None,
+    parish: str | None = None,
+    sort_by: str = Query("updated_at"),
+    sort_dir: str = Query("desc"),
     _user: User = Depends(require_roles("staff", "ceo")),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     q = db.query(ClientCase)
     if stage:
         q = q.filter(ClientCase.pipeline_stage == stage)
+    if risk:
+        q = q.filter(ClientCase.denial_risk_level == risk.lower())
+    if visa_class:
+        q = q.filter(ClientCase.visa_class.ilike(f"%{visa_class}%"))
+    if parish:
+        q = q.filter(ClientCase.parish.ilike(f"%{parish}%"))
     rows = q.order_by(ClientCase.id.desc()).all()
     if search:
         s = search.strip().lower()
@@ -287,8 +356,137 @@ def list_clients(
             or s in (r.pseudonym or "").lower()
             or s in (r.profile_tags_json or "").lower()
             or s in (r.visa_class or "").lower()
+            or s in (r.parish or "").lower()
+            or s in (r.occupation or "").lower()
         ]
+
+    risk_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+    def _key(c: ClientCase):
+        if sort_by == "standing_score":
+            return c.standing_score
+        if sort_by == "denial_risk_level":
+            return risk_rank.get((c.denial_risk_level or "").lower(), 0)
+        if sort_by == "full_name":
+            return (c.full_name or c.pseudonym or "").lower()
+        if sort_by == "monthly_gross_jmd":
+            return c.monthly_gross_jmd or 0.0
+        if sort_by == "embassy_interview_date":
+            return c.embassy_interview_date or "9999-12-31"
+        if sort_by == "pipeline_stage":
+            return c.pipeline_stage or ""
+        if sort_by == "case_id":
+            return c.case_id
+        return c.updated_at.timestamp() if c.updated_at else float(c.id)
+
+    rows.sort(key=_key, reverse=(sort_dir.lower() == "desc"))
     return [serialize_client_summary(r) for r in rows]
+
+
+@router.get("/clients/export/xlsx")
+def export_clients_xlsx(
+    _user: User = Depends(require_roles("staff", "ceo")),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Export all clients as a styled Excel (.xlsx) workbook with document counts & visa metrics."""
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Jahtaria Clients"
+
+    headers = [
+        "Case ID", "Full Name", "Visa Class", "Stage", "Good Standing %", "Denial Risk", "Outcome",
+        "Parish", "Email", "Phone", "Occupation", "Employer", "Monthly Gross JMD", "Monthly Net JMD",
+        "U.S. Destination", "Purpose of Trip", "Passport Expiry", "DS-160 Barcode", "Interview Date",
+        "Prior Refusals", "Vault Docs",
+    ]
+    ws.append(headers)
+    hdr_fill = PatternFill(start_color="1A472A", end_color="1A472A", fill_type="solid")
+    hdr_font = Font(bold=True, color="FFFFFF")
+    for cell in ws[1]:
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for c in db.query(ClientCase).order_by(ClientCase.id.desc()).all():
+        ws.append([
+            c.case_id, c.full_name or c.pseudonym, c.visa_class, c.pipeline_stage, c.standing_score,
+            c.denial_risk_level, c.outcome, c.parish, c.email, c.phone, c.occupation, c.employer_name,
+            c.monthly_gross_jmd, c.monthly_net_jmd, c.us_destination, c.purpose_of_trip,
+            c.passport_expiry, c.ds160_confirmation_id, c.embassy_interview_date, c.prior_us_refusals,
+            len(c.documents) + len(c.assets),
+        ])
+
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(38, max(12, max_len + 3))
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="jahtaria_clients.xlsx"'},
+    )
+
+
+@router.get("/clients/export/csv")
+def export_clients_csv(
+    _user: User = Depends(require_roles("staff", "ceo")),
+    db: Session = Depends(get_db),
+) -> Response:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "case_id", "full_name", "visa_class", "pipeline_stage", "standing_score", "denial_risk_level",
+        "outcome", "parish", "email", "phone", "occupation", "employer_name", "monthly_gross_jmd",
+        "monthly_net_jmd", "us_destination", "purpose_of_trip", "passport_expiry", "ds160_confirmation_id",
+        "embassy_interview_date", "prior_us_refusals", "document_count",
+    ])
+    for c in db.query(ClientCase).order_by(ClientCase.id.desc()).all():
+        writer.writerow([
+            c.case_id, c.full_name or c.pseudonym, c.visa_class, c.pipeline_stage, c.standing_score,
+            c.denial_risk_level, c.outcome, c.parish, c.email, c.phone, c.occupation, c.employer_name,
+            c.monthly_gross_jmd, c.monthly_net_jmd, c.us_destination, c.purpose_of_trip,
+            c.passport_expiry, c.ds160_confirmation_id, c.embassy_interview_date, c.prior_us_refusals,
+            len(c.documents) + len(c.assets),
+        ])
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="jahtaria_clients.csv"'},
+    )
+
+
+@router.post("/clients/import/spreadsheet")
+async def import_clients_spreadsheet(
+    file: UploadFile = File(...),
+    user: User = Depends(require_roles("staff", "ceo")),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Import clients directly from an uploaded .xlsx Excel workbook or .csv file."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename.")
+    raw = await file.read()
+    ext = file.filename.lower().rsplit(".", 1)[-1] if "." in file.filename else ""
+    if ext == "xlsx":
+        import openpyxl
+
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        rows_iter = list(ws.iter_rows(values_only=True))
+        if not rows_iter:
+            return {"imported_count": 0, "skipped_count": 0, "case_ids": []}
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        for r in rows_iter:
+            w.writerow(["" if v is None else str(v) for v in r])
+        csv_text = buf.getvalue()
+    else:
+        csv_text = raw.decode("utf-8", errors="replace")
+    return import_clients_from_csv(db, csv_text, actor=user.full_name)
 
 
 @router.post("/clients")

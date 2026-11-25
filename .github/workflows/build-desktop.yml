@@ -49,6 +49,8 @@ jobs:
             --hidden-import sqlalchemy.sql.default_comparator `
             --hidden-import cryptography `
             --hidden-import edge_tts `
+            --hidden-import openpyxl `
+            --hidden-import pypdfium2 `
             --hidden-import reportlab.graphics.barcode.code128 `
             desktop_entry.py
 
@@ -80,18 +82,20 @@ jobs:
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.1
-          name: "Jahtaria Visa Intelligence Desktop Suite v2.0.1 (Live ChatGPT Codex SSE, Windows Antigravity & Multi-Turn Memory)"
+          tag_name: v2.1.0
+          name: "Jahtaria Visa Intelligence Desktop Suite v2.1.0 (Smart Paste, Document & Signature Studio, Editable Spreadsheet & Unlimited Questionnaires)"
           body: |
-            ## Jahtaria Visa Intelligence — v2.0.1 (Setup.exe)
+            ## Jahtaria Visa Intelligence — v2.1.0 (Setup.exe)
 
-            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Setup-2.0.1.exe`**.
+            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Setup-2.1.0.exe`**.
 
-            ### What's Fixed in v2.0.1
-            - **Live ChatGPT / OpenAI Codex OAuth Streaming:** Fixed `openai-codex` to stream via SSE (`response.output_text.delta` / `response.completed`), send the `chatgpt-account-id` JWT claim header, and auto-refresh expired OAuth tokens.
-            - **Windows Antigravity Support:** Auto-detects `agy.exe` / `agy.cmd` across Windows paths (with Google OAuth endpoint fallback).
-            - **Full Multi-Turn Conversation Memory:** Passes the last 10 turns from `ChatMessage` into every AI provider so chat remembers context naturally.
-            - **Transparent Provider Diagnostics:** Never silently falls back to the canned Kingston Embassy blurb when a connected subscription fails — surfaces exact HTTP status/errors clearly in chat, and prompts conversationally to connect a provider when none is configured.
+            ### What's New in v2.1.0
+            - **Smart Paste Auto-Setup in Chat:** Paste `Ctrl+V` screenshots/images, drop multiple files, or paste API keys, MCP URLs/JSON, ClawLink creds, or CSV/Excel data right in chat — auto-configures with secret masking, Preview/Confirm & Undo.
+            - **Per-Client Document & Image Vault + Vision OCR:** Categorized per-client storage (`Passport/ID`, `Financial`, `RGD Civil`, `Embassy Forms`, `Photos`), AI Vision field extraction, **1-Click 92% RGD Photocopy Converter**, **AI Auto-Fill Official PDFs**, and **1-Click Embassy Packet Exporter (PDF/ZIP)**.
+            - **Full-Screen Document & Signature Studio:** Open any PDF, image, or DOCX full-screen to place draggable text boxes, checkmarks, dates, and drawn/typed signatures — saves versioned copies while preserving originals.
+            - **Editable Client Spreadsheet + Dynamic In-Chat Data Tables:** Inline cell editing, per-row document/image previews, 1-click Sort Tabs, real `.xlsx` Excel / CSV import & export, dynamic sortable/chartable chat tables, and 11 live `/mcp` tools.
+            - **Interactive In-Chat Questionnaires:** Clean stepper with Tips & Explanations, Multiple Choice, **Import into Chat**, and unlimited question generation.
+            - **Streamlined Connections Hub:** Priority setup order — **ChatGPT OAuth (Recommended) → Composio → ClawLink → Claude/Antigravity OAuth → API Keys**.
           files: desktop/dist/*.exe
           draft: false
           prerelease: false

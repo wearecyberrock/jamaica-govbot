@@ -174,10 +174,67 @@ def test_full_backend_workflow():
         convs = client.get("/api/conversations", headers=ceo_h)
         assert convs.status_code == 200 and len(convs.json()) >= 1
 
-        # 9. Inbound /mcp endpoint works
+        # 9. Inbound /mcp endpoint works (all 11 v2.1.0 tools!)
         mcp_list = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         assert mcp_list.status_code == 200
-        assert any(t["name"] == "jahtaria_audit_client" for t in mcp_list.json()["result"]["tools"])
+        tool_names = {t["name"] for t in mcp_list.json()["result"]["tools"]}
+        assert {"jahtaria_audit_client", "jahtaria_query_clients_table", "jahtaria_create_client", "jahtaria_update_client", "jahtaria_list_client_documents", "jahtaria_fill_official_pdf"}.issubset(tool_names)
+
+        # 10. v2.1.0 Smart Paste (API key redaction + ClawLink + MCP URL + Undo)
+        fake_gem_key = "AIzaSyTestKey12345678901234567890123456"
+        sp_key = client.post("/api/agent/command", headers=ceo_h, json={"message": f"use this key {fake_gem_key}"})
+        assert sp_key.status_code == 200
+        assert sp_key.json()["provider_used"] == "smart-paste-engine"
+        assert sp_key.json()["pending_action"]["status"] == "applied"
+        # Verify key was redacted from saved chat history!
+        conv_msgs = client.get(f"/api/conversations/{sp_key.json()['conversation_id']}/messages", headers=ceo_h).json()
+        assert all(fake_gem_key not in m["content"] for m in conv_msgs)
+        # Undo key change
+        assert client.post(f"/api/actions/{sp_key.json()['pending_action']['id']}/undo", headers=ceo_h).status_code == 200
+
+        # 11. Client Vault upload + 92% RGD Converter + Document Studio Burn-In + Embassy Packet + Excel Export
+        from PIL import Image
+        import io as _io
+
+        img_buf = _io.BytesIO()
+        Image.new("RGB", (400, 600), "#ffffff").save(img_buf, format="PNG")
+        up = client.post(
+            "/api/clients/C034/documents/upload",
+            headers=staff_h,
+            files={"file": ("rgd_birth_cert.png", img_buf.getvalue(), "image/png")},
+            data={"category": "rgd_civil", "auto_scan": "false"},
+        )
+        assert up.status_code == 200, up.text
+        vdoc_id = up.json()["document"]["id"]
+
+        rgd = client.post(f"/api/documents/vault/{vdoc_id}/rgd-92", headers=staff_h)
+        assert rgd.status_code == 200 and rgd.json()["document"]["mime_type"] == "application/pdf"
+        rgd_doc_id = rgd.json()["document"]["id"]
+
+        # Document Studio render page + burn text annotation into new version
+        rp = client.get(f"/api/documents/render-page?source_type=vault&source_id={rgd_doc_id}&page=0")
+        assert rp.status_code == 200 and rp.headers["content-type"] == "image/png"
+
+        saved = client.post(
+            "/api/documents/studio/save",
+            headers=staff_h,
+            json={
+                "source_type": "vault",
+                "source_id": str(rgd_doc_id),
+                "case_id": "C034",
+                "annotations": [{"type": "text", "page": 0, "x": 0.2, "y": 0.2, "text": "Verified by Staff"}],
+            },
+        )
+        assert saved.status_code == 200 and saved.json()["document"]["version_number"] >= 2
+
+        # Embassy Packet export & Excel .xlsx export & Dynamic In-Chat Table
+        pkt = client.post("/api/clients/C034/embassy-packet", headers=staff_h, json={"bundle_format": "pdf"})
+        assert pkt.status_code == 200 and pkt.json()["included_count"] >= 1
+        xlsx = client.get("/api/clients/export/xlsx", headers=staff_h)
+        assert xlsx.status_code == 200 and len(xlsx.content) > 1000
+        tbl_cmd = client.post("/api/agent/command", headers=ceo_h, json={"message": "sort clients by risk and show table"})
+        assert tbl_cmd.status_code == 200 and tbl_cmd.json()["data_table"] is not None
+        assert len(tbl_cmd.json()["data_table"]["rows"]) >= 1
 
 
 def test_ai_engine_fixes_sse_errors_and_history(monkeypatch):

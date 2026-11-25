@@ -74,6 +74,13 @@ class ComposioConfigRequest(BaseModel):
     account_label: str = ""
 
 
+class ClawLinkConfigRequest(BaseModel):
+    base_url: str = ""
+    token: str | None = None
+    channel: str = ""
+    enabled: bool = True
+
+
 class CompanyDbRequest(BaseModel):
     company_db_url: str
 
@@ -223,10 +230,21 @@ def get_setup_hub(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     base_url = str(request.base_url).rstrip("/")
+    from app.config import mask_secret
+
+    claw_url = get_setting(db, "clawlink_base_url", "")
+    claw_tok = get_setting(db, "clawlink_token", "")
+    claw_chan = get_setting(db, "clawlink_channel", "")
     return {
         "ai_providers": detect_available_providers(db),
         "settings": list_settings_safe(db),
         "composio": get_composio_status(db),
+        "clawlink": {
+            "configured": bool(claw_url or claw_tok),
+            "base_url": claw_url,
+            "token_masked": mask_secret(claw_tok),
+            "channel": claw_chan,
+        },
         "company_db_url": get_setting(db, "company_db_url", ""),
         "mcp_servers": get_mcp_servers(db),
         "inbound_mcp_endpoint": f"{base_url}/mcp",
@@ -300,6 +318,46 @@ def update_composio(
     if req.toggle_app_id is not None and req.connected is not None:
         return toggle_composio_app(db, req.toggle_app_id, req.connected, req.account_label)
     return get_composio_status(db)
+
+
+@router.post("/api/settings/clawlink")
+def update_clawlink(
+    req: ClawLinkConfigRequest,
+    _user: User = Depends(require_roles("ceo", "staff")),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    import httpx
+    from app.config import mask_secret
+
+    if req.base_url.strip():
+        set_setting(db, "clawlink_base_url", req.base_url.strip().rstrip("/"), is_secret=False, category="clawlink")
+    if req.token is not None and req.token.strip() and "•" not in req.token:
+        set_setting(db, "clawlink_token", req.token.strip(), is_secret=True, category="clawlink")
+    if req.channel.strip():
+        set_setting(db, "clawlink_channel", req.channel.strip(), is_secret=False, category="clawlink")
+
+    url = get_setting(db, "clawlink_base_url", "")
+    tok = get_setting(db, "clawlink_token", "")
+    probe_ok = False
+    probe_note = "Saved locally"
+    if url:
+        try:
+            headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+            with httpx.Client(timeout=5.0) as client:
+                r = client.get(url, headers=headers)
+                probe_ok = r.status_code < 500
+                probe_note = f"Reachable (HTTP {r.status_code})"
+        except Exception as exc:
+            probe_note = f"Saved (endpoint check: {str(exc)[:120]})"
+    return {
+        "ok": True,
+        "configured": bool(url or tok),
+        "base_url": url,
+        "token_masked": mask_secret(tok),
+        "channel": get_setting(db, "clawlink_channel", ""),
+        "reachable": probe_ok,
+        "note": probe_note,
+    }
 
 
 @router.post("/api/settings/company-db/test")

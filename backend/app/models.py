@@ -103,6 +103,7 @@ class ClientCase(Base):
     risk_flags: Mapped[list["RiskFlag"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     journal_entries: Mapped[list["PipelineJournal"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     assets: Mapped[list["GeneratedAsset"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    documents: Mapped[list["ClientDocument"]] = relationship(back_populates="client", cascade="all, delete-orphan")
 
 
 class ProfileFact(Base):
@@ -301,6 +302,33 @@ class GeneratedAsset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     client: Mapped["ClientCase"] = relationship(back_populates="assets")
+
+
+class ClientDocument(Base):
+    """Per-client categorized Document & Image Vault with OCR extraction & version history."""
+
+    __tablename__ = "client_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("clients.case_id", ondelete="CASCADE"), index=True, nullable=True)
+    category: Mapped[str] = mapped_column(String(64), default="photos_other")  # passport_id | financial_payslips | rgd_civil | embassy_forms | photos_other
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String(128), default="")
+    page_count: Mapped[int] = mapped_column(Integer, default=1)
+    extracted_text: Mapped[str] = mapped_column(Text, default="")
+    extracted_fields_json: Mapped[str] = mapped_column(Text, default="{}")
+    ai_summary: Mapped[str] = mapped_column(Text, default="")
+    parent_doc_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    visible_to_client: Mapped[bool] = mapped_column(Boolean, default=False)
+    uploaded_by: Mapped[str] = mapped_column(String(128), default="Staff")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    client: Mapped["ClientCase | None"] = relationship(back_populates="documents")
 
 
 class AppSetting(Base):

@@ -30,12 +30,24 @@ import {
   Trash2,
   CheckCircle2,
   RotateCcw,
+  FileSpreadsheet,
+  Maximize2,
 } from "lucide-react";
 import { apiFetch, clearAuthSession, getStoredToken, getStoredUser } from "@/lib/api";
-import type { BrandingConfig, ChatQuestionnairePayload, ClientSummary, UserAccount } from "@/lib/types";
+import type {
+  BrandingConfig,
+  ChatDataTablePayload,
+  ChatQuestionnairePayload,
+  ClientDocumentItem,
+  ClientSummary,
+  StudioTarget,
+  UserAccount,
+} from "@/lib/types";
 import { RightSidePanel, type PanelRequest } from "./RightSidePanel";
 import { RichMarkdown } from "./RichMarkdown";
 import { ChatQuestionnaireCard } from "./ChatQuestionnaireCard";
+import { ChatDataTableCard } from "./ChatDataTableCard";
+import { DocumentStudioModal } from "./DocumentStudioModal";
 
 interface PendingActionData {
   id: number;
@@ -57,6 +69,8 @@ interface ChatTurn {
   panel?: PanelRequest | null;
   pending_action?: PendingActionData | null;
   questionnaire?: ChatQuestionnairePayload | null;
+  data_table?: ChatDataTablePayload | null;
+  vault_doc?: ClientDocumentItem | null;
 }
 
 interface SavedConv {
@@ -103,6 +117,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [panelRefreshNonce, setPanelRefreshNonce] = useState(0);
+  const [studioTarget, setStudioTarget] = useState<StudioTarget | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -243,27 +258,41 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
     setTurns(msgs);
   };
 
-  const handleFileUpload = async (file: File) => {
-    if (!file || user?.role === "customer") return;
+  const handleFileUpload = async (filesInput: File | FileList | File[]) => {
+    if (!filesInput || user?.role === "customer") return;
+    const files = filesInput instanceof File ? [filesInput] : Array.from(filesInput);
+    if (files.length === 0) return;
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      if (activeCaseId) fd.append("case_id", activeCaseId);
-      const res = await apiFetch<{ title: string; filename: string; detected_fields: string[]; panel: PanelRequest }>(
-        "/api/agent/upload-chat-file",
-        { method: "POST", body: fd }
-      );
-      setTurns((prev) => [
-        ...prev,
-        { sender: "user", content: `Attached file: \`${res.filename}\`` },
-        {
-          sender: "assistant",
-          content: `Indexed **${res.title}** (${res.detected_fields.length} fillable fields detected) and opened it in the side panel.`,
-          panel: res.panel,
-        },
-      ]);
-      openPanel(res.panel);
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append("file", file);
+        if (activeCaseId) fd.append("case_id", activeCaseId);
+        const res = await apiFetch<{
+          kind: string;
+          title: string;
+          filename: string;
+          summary?: string;
+          vault_doc?: ClientDocumentItem;
+          pending_action?: PendingActionData | null;
+          panel: PanelRequest;
+        }>("/api/agent/upload-chat-file", { method: "POST", body: fd });
+        setTurns((prev) => [
+          ...prev,
+          { sender: "user", content: `Pasted / Attached file: \`${res.filename}\`` },
+          {
+            sender: "assistant",
+            content:
+              res.summary ||
+              `Indexed **${res.title}** and opened it in the side panel.`,
+            panel: res.panel,
+            vault_doc: res.vault_doc || null,
+            pending_action: res.pending_action || null,
+          },
+        ]);
+        if (res.panel) openPanel(res.panel);
+      }
+      setPanelRefreshNonce((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -306,6 +335,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         ui_panel: PanelRequest | null;
         pending_action: PendingActionData | null;
         questionnaire?: ChatQuestionnairePayload | null;
+        data_table?: ChatDataTablePayload | null;
       }>("/api/agent/command", {
         method: "POST",
         body: JSON.stringify({
@@ -337,6 +367,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           panel: res.ui_panel,
           pending_action: res.pending_action,
           questionnaire: res.questionnaire || null,
+          data_table: res.data_table || null,
         },
       ]);
 
@@ -415,18 +446,17 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
       onDrop={(e) => {
         e.preventDefault();
         setDragActive(false);
-        const f = e.dataTransfer.files?.[0];
-        if (f && isStaffOrCeo) handleFileUpload(f);
+        if (e.dataTransfer.files?.length && isStaffOrCeo) handleFileUpload(e.dataTransfer.files);
       }}
     >
       <input
         ref={fileInputRef}
         type="file"
-        accept=".pdf,.docx,.png,.jpg,.jpeg"
+        multiple
+        accept=".pdf,.docx,.png,.jpg,.jpeg,.webp,.csv,.xlsx"
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) handleFileUpload(f);
+          if (e.target.files?.length) handleFileUpload(e.target.files);
           e.target.value = "";
         }}
       />
@@ -479,6 +509,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           {isStaffOrCeo ? (
             <>
               <SidebarBtn icon={Users} label="Clients" open={sidebarOpen} active={rightPanel?.panel === "clients_list"} onClick={() => openPanel({ panel: "clients_list", title: "Client Pipeline" })} />
+              <SidebarBtn icon={FileSpreadsheet} label="Spreadsheet" open={sidebarOpen} active={rightPanel?.panel === "spreadsheet"} onClick={() => openPanel({ panel: "spreadsheet", title: "Client Spreadsheet & Vault" })} />
               <SidebarBtn icon={FileText} label="Official PDFs" open={sidebarOpen} active={rightPanel?.panel === "official_pdfs"} onClick={() => openPanel({ panel: "official_pdfs", title: "Official Government PDF Viewer" })} />
               <SidebarBtn icon={Globe} label="Gov Sources" open={sidebarOpen} active={rightPanel?.panel === "gov_sources"} onClick={() => openPanel({ panel: "gov_sources", title: "Official Scraped Gov Sources" })} />
               <SidebarBtn icon={Database} label="Database" open={sidebarOpen} active={rightPanel?.panel === "database"} onClick={() => openPanel({ panel: "database", table: "clients", title: "Database Explorer" })} />
@@ -669,6 +700,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                   setShowPlusMenu={setShowPlusMenu}
                   isStaffOrCeo={isStaffOrCeo}
                   onAttachClick={() => fileInputRef.current?.click()}
+                  onPasteFiles={(files) => handleFileUpload(files)}
                   onSend={() => sendMessage()}
                   onOpenPanel={openPanel}
                 />
@@ -741,6 +773,114 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                           setPanelRefreshNonce((n) => n + 1);
                         }}
                       />
+                    )}
+
+                    {/* Interactive In-Chat Data Table & Mini Chart */}
+                    {t.data_table && (
+                      <ChatDataTableCard
+                        data={t.data_table}
+                        onSelectCase={(cid) => {
+                          setActiveCaseId(cid);
+                          openPanel({ panel: "client", case_id: cid, subview: "overview", title: `Case ${cid}` });
+                        }}
+                        onOpenSpreadsheet={() => openPanel({ panel: "spreadsheet", title: "Client Spreadsheet & Vault" })}
+                      />
+                    )}
+
+                    {/* Scanned Vault Document Card (with Full-Screen Studio + Attach/Create Client if unassigned) */}
+                    {t.vault_doc && (
+                      <div className="mt-3 g-card p-3.5 space-y-2.5 border-blue-400/30">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 text-[10px] uppercase font-semibold shrink-0">
+                              {t.vault_doc.category.replace(/_/g, " ")}
+                            </span>
+                            <span className="font-semibold text-white truncate">{t.vault_doc.title}</span>
+                          </div>
+                          <button
+                            onClick={() =>
+                              setStudioTarget({
+                                source_type: "vault",
+                                source_id: String(t.vault_doc!.id),
+                                case_id: t.vault_doc!.case_id || activeCaseId,
+                                title: t.vault_doc!.title,
+                              })
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold inline-flex items-center gap-1 shrink-0"
+                          >
+                            <Maximize2 className="w-3 h-3" /> Edit &amp; Sign Full Screen
+                          </button>
+                        </div>
+
+                        {t.vault_doc.mime_type.startsWith("image/") && (
+                          <img src={t.vault_doc.file_url} alt={t.vault_doc.title} className="max-h-48 rounded-lg border border-white/10" />
+                        )}
+
+                        {Object.keys(t.vault_doc.extracted_fields || {}).length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 text-[11px]">
+                            {Object.entries(t.vault_doc.extracted_fields).map(([k, v]) => (
+                              <span key={k} className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-slate-300">
+                                <b className="text-slate-400">{k.replace(/_/g, " ")}:</b> {String(v)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {t.vault_doc.needs_client_assignment && (
+                          <div className="pt-1 border-t border-white/10 flex flex-wrap items-center gap-2 text-xs">
+                            <span className="text-amber-300 text-[11px]">No client selected — assign this scan:</span>
+                            <select
+                              className="g-input text-xs py-1 w-44"
+                              defaultValue=""
+                              onChange={async (e) => {
+                                const cid = e.target.value;
+                                if (!cid) return;
+                                await apiFetch(`/api/documents/vault/${t.vault_doc!.id}/attach`, {
+                                  method: "POST",
+                                  body: JSON.stringify({ case_id: cid }),
+                                });
+                                setActiveCaseId(cid);
+                                setTurns((prev) =>
+                                  prev.map((turn, ti) =>
+                                    ti === idx && turn.vault_doc
+                                      ? { ...turn, vault_doc: { ...turn.vault_doc, case_id: cid, needs_client_assignment: false } }
+                                      : turn
+                                  )
+                                );
+                                setPanelRefreshNonce((n) => n + 1);
+                              }}
+                            >
+                              <option value="">Attach to existing client...</option>
+                              {activeClients.map((c) => (
+                                <option key={c.case_id} value={c.case_id}>
+                                  {c.case_id} — {c.full_name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={async () => {
+                                const r = await apiFetch<{ case_id: string }>(`/api/documents/vault/${t.vault_doc!.id}/attach`, {
+                                  method: "POST",
+                                  body: JSON.stringify({ create_new_client: true }),
+                                });
+                                setActiveCaseId(r.case_id);
+                                setTurns((prev) =>
+                                  prev.map((turn, ti) =>
+                                    ti === idx && turn.vault_doc
+                                      ? { ...turn, vault_doc: { ...turn.vault_doc, case_id: r.case_id, needs_client_assignment: false } }
+                                      : turn
+                                  )
+                                );
+                                openPanel({ panel: "client", case_id: r.case_id, subview: "blueprints", title: `Case ${r.case_id}` });
+                                setPanelRefreshNonce((n) => n + 1);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold"
+                            >
+                              + Create New Client from Scan
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
 
                     {/* CEO Preview / Confirm & Undo Action Card */}
@@ -866,6 +1006,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                 setShowPlusMenu={setShowPlusMenu}
                 isStaffOrCeo={isStaffOrCeo}
                 onAttachClick={() => fileInputRef.current?.click()}
+                onPasteFiles={(files) => handleFileUpload(files)}
                 onSend={() => sendMessage()}
                 onOpenPanel={openPanel}
               />
@@ -896,6 +1037,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           refreshNonce={panelRefreshNonce}
           onNavigatePanel={openPanel}
           onSelectCaseForChat={(cid) => setActiveCaseId(cid)}
+          onOpenStudio={(target) => setStudioTarget(target)}
           onImportQuestionnaireToChat={(payload) => {
             setActiveCaseId(payload.case_id);
             setTurns((prev) => [
@@ -915,6 +1057,16 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             setRightPanel(null);
             loadModelCatalog();
           }}
+        />
+      )}
+
+      {/* Full-Screen Document Preview, Text Editing & Signature Studio */}
+      {studioTarget && (
+        <DocumentStudioModal
+          target={studioTarget}
+          activeCaseId={activeCaseId}
+          onClose={() => setStudioTarget(null)}
+          onSaved={() => setPanelRefreshNonce((n) => n + 1)}
         />
       )}
     </div>
@@ -950,6 +1102,7 @@ function PromptPill({
   setShowPlusMenu,
   isStaffOrCeo,
   onAttachClick,
+  onPasteFiles,
   onSend,
   onOpenPanel,
 }: {
@@ -966,6 +1119,7 @@ function PromptPill({
   setShowPlusMenu: (b: boolean) => void;
   isStaffOrCeo: boolean;
   onAttachClick: () => void;
+  onPasteFiles: (files: File[]) => void;
   onSend: () => void;
   onOpenPanel: (req: PanelRequest) => void;
 }) {
@@ -1017,9 +1171,24 @@ function PromptPill({
 
         <input
           className="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-slate-100 placeholder:text-slate-500 px-1"
-          placeholder={listening ? "Listening… speak now" : "Ask Visa Agent or type a command..."}
+          placeholder={listening ? "Listening… speak now" : "Ask anything, paste an image/key/MCP/CSV, or drop docs..."}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={(e) => {
+            if (!isStaffOrCeo) return;
+            const items = Array.from(e.clipboardData?.items || []);
+            const pastedFiles: File[] = [];
+            for (const it of items) {
+              if (it.kind === "file") {
+                const f = it.getAsFile();
+                if (f) pastedFiles.push(f);
+              }
+            }
+            if (pastedFiles.length > 0) {
+              e.preventDefault();
+              onPasteFiles(pastedFiles);
+            }
+          }}
           onKeyDown={(e) => e.key === "Enter" && onSend()}
         />
 
