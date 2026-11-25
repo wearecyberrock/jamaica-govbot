@@ -1,4 +1,4 @@
-"""Authentication, Customer Signup, Case Access Code Login, Role Management & Public Branding."""
+"""Authentication, One-Time CEO Setup, CEO->Staff Creation, Customer Self-Signup & Case Code Login."""
 
 from __future__ import annotations
 
@@ -15,6 +15,13 @@ from app.models import BrandingConfig, ClientCase, PipelineJournal, User
 from app.services.risk_engine import evaluate_client_standing, generate_ranked_predictions
 
 router = APIRouter(prefix="/api", tags=["auth"])
+
+
+class SetupCeoRequest(BaseModel):
+    full_name: str
+    email: EmailStr
+    password: str
+    agency_name: str = ""
 
 
 class LoginRequest(BaseModel):
@@ -40,7 +47,7 @@ class CreateUserRequest(BaseModel):
     full_name: str
     email: EmailStr
     password: str
-    role: str = "staff"
+    role: str = "staff"  # staff | customer (only ONE CEO allowed)
     linked_case_id: str | None = None
 
 
@@ -78,6 +85,55 @@ def get_public_branding(db: Session = Depends(get_db)) -> dict[str, Any]:
     }
 
 
+@router.get("/auth/setup-status")
+def get_setup_status(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Check whether the single CEO account has been claimed yet."""
+    ceo_exists = db.query(User).filter(User.role == "ceo", User.is_active == True).first() is not None  # noqa: E712
+    staff_count = db.query(User).filter(User.role == "staff", User.is_active == True).count()  # noqa: E712
+    customer_count = db.query(User).filter(User.role == "customer", User.is_active == True).count()  # noqa: E712
+    return {
+        "ceo_exists": ceo_exists,
+        "staff_count": staff_count,
+        "customer_count": customer_count,
+    }
+
+
+@router.post("/auth/setup-ceo")
+def setup_single_ceo(req: SetupCeoRequest, response: Response, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """One-time initialization to create the single Agency CEO account."""
+    existing_ceo = db.query(User).filter(User.role == "ceo", User.is_active == True).first()  # noqa: E712
+    if existing_ceo:
+        raise HTTPException(
+            status_code=403,
+            detail="A CEO account already exists for this installation. Please sign in or contact the CEO.",
+        )
+    email_norm = req.email.strip().lower()
+    if db.query(User).filter(User.email == email_norm).first():
+        raise HTTPException(status_code=409, detail="Email is already registered.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+
+    if req.agency_name.strip():
+        b = db.query(BrandingConfig).first()
+        if b:
+            b.agency_name = req.agency_name.strip()
+
+    ceo = User(
+        email=email_norm,
+        full_name=req.full_name.strip(),
+        role="ceo",
+        password_hash=hash_password(req.password),
+        is_active=True,
+    )
+    db.add(ceo)
+    db.commit()
+    db.refresh(ceo)
+
+    token = create_access_token(ceo)
+    response.set_cookie("govbot_token", token, httponly=True, samesite="lax")
+    return {"access_token": token, "token_type": "bearer", "user": _user_dict(ceo)}
+
+
 @router.post("/auth/login")
 def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)) -> dict[str, Any]:
     user = db.query(User).filter(User.email == req.email.strip().lower(), User.is_active == True).first()  # noqa: E712
@@ -90,9 +146,12 @@ def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)) 
 
 @router.post("/auth/signup")
 def customer_signup(req: CustomerSignupRequest, response: Response, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Clients can self-register their own Customer Portal account anytime."""
     email_norm = req.email.strip().lower()
     if db.query(User).filter(User.email == email_norm).first():
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
 
     next_num = db.query(ClientCase).count() + 1
     case_id = f"C{next_num:03d}"
@@ -130,7 +189,7 @@ def customer_signup(req: CustomerSignupRequest, response: Response, db: Session 
             case_id=case_id,
             event_type="customer_signup",
             actor=req.full_name.strip(),
-            summary=f"New customer registered via Client Portal ({email_norm}) with access code {access_code}.",
+            summary=f"New client created account ({email_norm}) with Case ID {case_id} and access code {access_code}.",
         )
     )
     db.commit()
@@ -189,8 +248,9 @@ def list_users(_ceo: User = Depends(require_roles("ceo")), db: Session = Depends
 
 @router.post("/auth/users")
 def create_user(req: CreateUserRequest, _ceo: User = Depends(require_roles("ceo")), db: Session = Depends(get_db)) -> dict[str, Any]:
-    if req.role not in ("ceo", "staff", "customer"):
-        raise HTTPException(status_code=400, detail="Role must be ceo, staff, or customer.")
+    """CEO creates Staff or Customer accounts. Strictly enforces only ONE CEO account."""
+    if req.role not in ("staff", "customer"):
+        raise HTTPException(status_code=400, detail="Only one CEO account is permitted. Create 'staff' or 'customer' accounts here.")
     email_norm = req.email.strip().lower()
     if db.query(User).filter(User.email == email_norm).first():
         raise HTTPException(status_code=409, detail="Email already registered.")
@@ -205,3 +265,15 @@ def create_user(req: CreateUserRequest, _ceo: User = Depends(require_roles("ceo"
     db.commit()
     db.refresh(user)
     return _user_dict(user)
+
+
+@router.delete("/auth/users/{user_id}")
+def delete_user(user_id: int, ceo: User = Depends(require_roles("ceo")), db: Session = Depends(get_db)) -> dict[str, Any]:
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target.id == ceo.id or target.role == "ceo":
+        raise HTTPException(status_code=400, detail="Cannot delete the primary CEO account.")
+    db.delete(target)
+    db.commit()
+    return {"deleted": True, "user_id": user_id}

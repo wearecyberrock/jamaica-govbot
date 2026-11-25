@@ -132,7 +132,7 @@ function createWindow() {
     minHeight: 720,
     title: "Jahtaria Travel Services — U.S. Visa Intelligence Suite",
     icon: path.join(__dirname, "build", process.platform === "win32" ? "icon.ico" : "icon.png"),
-    backgroundColor: "#1a472a",
+    backgroundColor: "#0d0f13",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -149,15 +149,15 @@ function createWindow() {
     return { action: "deny" };
   });
 
-  // Load branded splash immediately while backend starts
+  // Load dark graphite splash immediately while backend starts
   mainWindow.loadURL(
     "data:text/html;charset=utf-8," +
       encodeURIComponent(`
-        <html><body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a472a,#0b3c68);color:#fff;font-family:Segoe UI,sans-serif;">
-          <div style="font-size:26px;font-weight:800;color:#ffd700;letter-spacing:0.5px;">JAHTARIA TRAVEL SERVICES</div>
-          <div style="font-size:14px;opacity:0.9;margin-top:8px;">Starting U.S. Visa Intelligence &amp; Consular Engine...</div>
-          <div style="margin-top:22px;width:220px;height:5px;background:rgba(255,255,255,0.2);border-radius:99px;overflow:hidden;">
-            <div style="width:60%;height:100%;background:#ffd700;border-radius:99px;"></div>
+        <html><body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#182033 0%,#0d0f13 70%);color:#f1f5f9;font-family:Segoe UI,sans-serif;">
+          <div style="font-size:22px;font-weight:700;color:#f1f5f9;letter-spacing:0.3px;">Jahtaria Visa Intelligence</div>
+          <div style="font-size:13px;color:#9ca3af;margin-top:8px;">Starting AI Consular Agent...</div>
+          <div style="margin-top:20px;width:180px;height:4px;background:rgba(255,255,255,0.12);border-radius:99px;overflow:hidden;">
+            <div style="width:55%;height:100%;background:#60a5fa;border-radius:99px;"></div>
           </div>
         </body></html>
       `)

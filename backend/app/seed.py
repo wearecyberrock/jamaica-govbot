@@ -674,8 +674,8 @@ def seed_all(db: Session) -> None:
                 client = ClientCase(
                     case_id=cid,
                     access_code=f"JAH-{cid}",
-                    pseudonym=f"Jahtaria Client {cid}",
-                    full_name=extra.get("full_name", f"Pseudonymized Case {cid}"),
+                    pseudonym=f"Reference Case {cid}",
+                    full_name=extra.get("full_name", f"Reference Case {cid}"),
                     nationality="Jamaica",
                     parish=extra.get("parish", "Kingston & St. Andrew"),
                     visa_class=item.get("visa_class") if item.get("visa_class") != "unknown" else "B1/B2",
@@ -822,16 +822,8 @@ def seed_all(db: Session) -> None:
             db.add(PipelineJournal(case_id="C034", event_type="assets_approved", actor="Staff Specialist", summary="Approved DS-160 Worksheet PDF, Kingston Checklist PDF, and Visual Roadmap PNG for client portal download."))
             db.commit()
 
-    # 9. Seed 3 Starter Login Accounts (CEO, Staff, Customer)
-    if db.query(User).count() == 0:
-        db.add_all(
-            [
-                User(email=SEED_CEO_EMAIL.lower(), full_name="Shakir — Agency CEO", role="ceo", password_hash=hash_password(SEED_CEO_PASSWORD)),
-                User(email=SEED_STAFF_EMAIL.lower(), full_name="Nadine — Senior Visa Specialist", role="staff", password_hash=hash_password(SEED_STAFF_PASSWORD)),
-                User(email=SEED_CLIENT_EMAIL.lower(), full_name="Marcus Campbell", role="customer", password_hash=hash_password(SEED_CLIENT_PASSWORD), linked_case_id="C034"),
-            ]
-        )
-        db.commit()
+    # 9. Do NOT hardcode an owner/CEO login — the agency owner claims the single CEO account on first launch
+    # via /api/auth/setup-ceo, then creates Staff accounts, while Clients can self-register anytime.
 
     # 10. Seed Obsidian Vault Notes + Featured Client Dossiers
     _seed_obsidian_vault()

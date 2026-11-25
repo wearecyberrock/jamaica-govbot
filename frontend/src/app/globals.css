@@ -1,71 +1,91 @@
-@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --ja-green: #1a472a;
-  --ja-green-dark: #13331e;
-  --ja-green-light: #eef7f2;
-  --ja-gold: #d4a234;
-  --ja-gold-bright: #ffd700;
-  --ja-navy: #0b3c68;
-  --ja-sunset: #f28c18;
-  --ja-red: #ce1126;
+  --bg-canvas: #0d0f13;
+  --bg-sidebar: #111318;
+  --bg-surface: #171a21;
+  --bg-surface-hover: #1e222c;
+  --bg-elevated: #212632;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text-primary: #f1f5f9;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --accent-blue: #60a5fa;
+  --accent-gold: #e5b84b;
+  --accent-emerald: #22c55e;
+  --accent-red: #ef4444;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
 
 body {
-  font-family: "Plus Jakarta Sans", "Inter", system-ui, -apple-system, sans-serif;
-  background: radial-gradient(circle at top right, rgba(255, 215, 0, 0.08), transparent 34%),
-    radial-gradient(circle at top left, rgba(26, 71, 42, 0.08), transparent 36%),
-    linear-gradient(180deg, #f6faf8 0%, #eef5f1 50%, #f4f7fb 100%);
-  color: #0f172a;
+  font-family: "Inter", "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
-.ja-tricolor-bar {
-  height: 5px;
+.graphite-ambient {
+  background: radial-gradient(ellipse 65% 55% at 50% 45%, rgba(37, 65, 130, 0.22) 0%, rgba(16, 42, 34, 0.14) 40%, #0d0f13 78%);
+}
+
+.g-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+}
+
+.g-input {
   width: 100%;
-  background: linear-gradient(90deg, var(--ja-green) 0%, var(--ja-gold-bright) 50%, var(--ja-navy) 100%);
-}
-
-.ja-card {
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
-}
-
-.ja-btn-primary {
-  background-color: var(--ja-green);
-  color: #ffd700;
-  border: 1.5px solid #ffd700;
+  background: #12151b;
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
-  font-weight: 700;
-  transition: all 0.2s ease;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.ja-btn-primary:hover {
-  background-color: var(--ja-green-dark);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(26, 71, 42, 0.25);
+.g-input::placeholder {
+  color: var(--text-muted);
 }
 
-.ja-input {
-  width: 100%;
-  background: #ffffff;
-  border: 1.5px solid rgba(15, 23, 42, 0.14);
-  border-radius: 10px;
-  padding: 0.65rem 0.9rem;
-  font-size: 0.9rem;
-  color: #0f172a;
-  transition: all 0.2s ease;
-}
-
-.ja-input:focus {
+.g-input:focus {
   outline: none;
-  border-color: var(--ja-green);
-  box-shadow: 0 0 0 3px rgba(26, 71, 42, 0.12);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
+}
+
+.g-btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+  border-radius: 10px;
+  font-weight: 600;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.g-btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.g-btn-ghost {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: 10px;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.g-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.1);
 }

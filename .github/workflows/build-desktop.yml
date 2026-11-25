@@ -79,17 +79,16 @@ jobs:
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: "Jahtaria Visa Intelligence Desktop Suite v1.0.0 (Windows Setup.exe)"
+          tag_name: v1.1.0
+          name: "Jahtaria Visa Intelligence Desktop Suite v1.1.0 (Dark Graphite Agent UI — Setup.exe)"
           body: |
-            ## Jahtaria Travel Services — U.S. Visa Intelligence Desktop Suite
+            ## Jahtaria Visa Intelligence — v1.1.0 (Dark Graphite Chatbot-First Edition)
 
-            **Zero Python, zero Node.js, zero Docker required.** Just download and double-click **`Jahtaria-Visa-Intelligence-Setup-1.0.0.exe`**.
+            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Setup-1.1.0.exe`**.
 
-            ### Seeded Starter Logins (1-Click Buttons on Login Screen)
-            - **CEO Executive Suite:** `ceo@jahtariatravel.com` / `JahtariaCEO2026!`
-            - **Staff Operations Workspace:** `staff@jahtariatravel.com` / `JahtariaStaff2026!`
-            - **Customer Portal:** `client@jahtariatravel.com` / `JahtariaClient2026!` (Case Code: `JAH-C034`)
+            ### What's New in v1.1.0
+            - **Dark Graphite Chatbot-First Agent Workspace:** Clean centered prompt bar (`Chat` & `Task` modes), collapsible left sidebar, and collapsible Right Side Panel that automatically opens SVG graphs, visual roadmaps, official PICA/DOS PDFs, client Good Standing dossiers, Database tables, and Obsidian notes as you type.
+            - **Strict Single-CEO Onboarding:** No hardcoded owner accounts — the agency owner claims the single CEO account on first launch, creates Staff accounts, and Clients can self-register or sign in with a Case Access Code anytime.
           files: desktop/dist/*.exe
           draft: false
           prerelease: false
