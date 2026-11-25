@@ -52,6 +52,9 @@ jobs:
             --hidden-import openpyxl `
             --hidden-import pypdfium2 `
             --hidden-import reportlab.graphics.barcode.code128 `
+            --hidden-import certifi `
+            --hidden-import truststore `
+            --collect-data certifi `
             desktop_entry.py
 
       - name: Stage Electron bundled resources
@@ -84,19 +87,16 @@ jobs:
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.3.0-alpha
-          name: "Jahtaria Visa Intelligence Alpha v2.3.0 (Windows Setup.exe + User Guide)"
+          tag_name: v2.3.1-alpha
+          name: "Jahtaria Visa Intelligence Alpha v2.3.1 (Windows SSL Certificate Fix + Built-In Update Checker)"
           body: |
-            ## Jahtaria Visa Intelligence Alpha — v2.3.0 (Windows Setup.exe)
+            ## Jahtaria Visa Intelligence Alpha — v2.3.1 (Windows Setup.exe)
 
-            **Zero Python, zero Node.js, zero Docker required.** Download and double-click **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.3.0.exe`**, and read **`JAHTARIA_ALPHA_USER_GUIDE.md`** for a complete walkthrough.
+            **Zero Python, zero Node.js, zero Docker required.** Run **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.3.1.exe`** right over your existing install — **all your local client records, accounts, and Obsidian vault are preserved automatically.**
 
-            ### Highlights in v2.3.0 Alpha
-            - **Username Sign-In, Forgot Password & Commercial Handoff:** Offline Recovery PIN + optional Gmail 6-digit OTP + CEO Reset. Initial setup login (`testaccount` / `testpassword`, Recovery PIN `1234`) converts cleanly into your production CEO account as soon as you rename it.
-            - **Live Auto-Discovery Flagship Model Picker:** `★ Auto · Best Flagship` on top + live discovery for Antigravity (`gemini-4-neon`, `gemini-4-hydrogen`, `claude-opus-5-5`), Google Gemini API, ChatGPT/OpenAI (`gpt-5.4`), Claude, Grok, OpenRouter, Ollama + Custom Model ID input & automatic 503 failover.
-            - **Gmail Automation, Chat Cron Builder & Inbox-to-Vault Sync:** Dual Mode (auto-send routine reminders + approval queue for AI/sensitive messages), create/list/pause/delete cron reminders directly in chat, IMAP inbox polling that auto-saves client email attachments to their Vault, 1-click Copy for WhatsApp, and Hermes Cron export.
-            - **Universal File & ZIP Client Synthesizer + Safe Chat Delete:** Drop `.zip`, `.txt`, `.md`, `.json`, `.csv`, `.xlsx`, `.docx`, or `.pdf` files in chat to synthesize new clients & attach matched vault documents with Confirm/Undo.
-            - **Full-Screen Document & Signature Studio + 92% RGD Converter + Editable Client Spreadsheet:** Complete Kingston Embassy workflow backed by the bundled `JAHTARIA_Visa_Intelligence_Engineer_Package_v01` dataset.
+            ### What's Fixed in v2.3.1 Alpha
+            - **Windows SSL / TLS Certificate Fix (OpenAI Codex OAuth, ElevenLabs, Fish Audio & Gmail):** Bundled `truststore` (reads Windows's native Certificate Store automatically — works even behind antivirus Web Shields & corporate proxies!) + `certifi` CA roots inside the frozen Windows `.exe`, eliminating `SSL: CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`.
+            - **Built-In Update Checker:** Checks GitHub Releases automatically on launch (and via `Jahtaria Alpha → Check for Updates...`) so future updates notify you with a 1-click download button.
           files: |
             desktop/dist/*.exe
             JAHTARIA_ALPHA_USER_GUIDE.md

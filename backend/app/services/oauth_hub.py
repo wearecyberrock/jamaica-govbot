@@ -54,21 +54,32 @@ _FLOWS: dict[str, dict[str, Any]] = {}
 _FLOWS_LOCK = threading.Lock()
 
 
+def _build_ssl_verify() -> Any:
+    """Use OS native cert store (truststore) when available, else bundled certifi CA roots."""
+    try:
+        import ssl
+        import truststore
+
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        pass
+    try:
+        import certifi
+
+        return certifi.where()
+    except Exception:
+        return True
+
+
 def _http_post(url: str, payload: dict[str, Any], form: bool = False) -> dict[str, Any]:
-    if form:
-        data = urllib.parse.urlencode(payload).encode("utf-8")
-        ct = "application/x-www-form-urlencoded"
-    else:
-        data = json.dumps(payload).encode("utf-8")
-        ct = "application/json"
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={"Content-Type": ct, "Accept": "application/json", "User-Agent": CODEX_USER_AGENT},
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    headers = {"Accept": "application/json", "User-Agent": CODEX_USER_AGENT}
+    with httpx.Client(timeout=15.0, verify=_build_ssl_verify(), follow_redirects=True) as client:
+        if form:
+            resp = client.post(url, data=payload, headers=headers)
+        else:
+            resp = client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ── 1. ChatGPT / OpenAI Codex Device-Code Flow ───────────────────────────────
@@ -165,6 +176,14 @@ def _codex_poll_worker(flow_id: str) -> None:
                         if flow_id in _FLOWS:
                             _FLOWS[flow_id]["status"] = "connected"
                     return
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 404):
+                continue
+            with _FLOWS_LOCK:
+                if flow_id in _FLOWS:
+                    _FLOWS[flow_id]["status"] = "error"
+                    _FLOWS[flow_id]["error"] = f"OpenAI auth error (HTTP {exc.response.status_code})"
+            return
         except urllib.error.HTTPError as exc:
             if exc.code in (403, 404):
                 continue

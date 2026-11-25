@@ -3,13 +3,95 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const https = require("https");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BACKEND_PORT = process.env.BACKEND_PORT || "8010";
 const APP_URL = `http://127.0.0.1:${BACKEND_PORT}`;
+const RELEASES_API = "https://api.github.com/repos/wearecyberrock/jamaica-govbot/releases?per_page=5";
 
 let backendProc = null;
 let mainWindow = null;
+
+function parseSemver(tag) {
+  const m = String(tag || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
+}
+
+function isNewerVersion(remoteTag, currentVersion) {
+  const r = parseSemver(remoteTag);
+  const c = parseSemver(currentVersion);
+  for (let i = 0; i < 3; i++) {
+    if (r[i] > c[i]) return true;
+    if (r[i] < c[i]) return false;
+  }
+  return false;
+}
+
+function checkForUpdates(manual = false) {
+  const currentVersion = app.getVersion();
+  const req = https.get(
+    RELEASES_API,
+    { headers: { "User-Agent": `Jahtaria-Desktop/${currentVersion}`, Accept: "application/vnd.github+json" }, timeout: 10000 },
+    (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => {
+        try {
+          if (res.statusCode !== 200) throw new Error(`HTTP ${res.statusCode}`);
+          const list = JSON.parse(body);
+          if (!Array.isArray(list) || !list.length) throw new Error("No releases found");
+          const newest = list.find((r) => Array.isArray(r.assets) && r.assets.some((a) => String(a.name).toLowerCase().endsWith(".exe")));
+          if (!newest) return;
+          const exeAsset = newest.assets.find((a) => String(a.name).toLowerCase().endsWith(".exe"));
+          if (isNewerVersion(newest.tag_name, currentVersion)) {
+            dialog
+              .showMessageBox(mainWindow || undefined, {
+                type: "info",
+                buttons: ["Download Update Now", "Later"],
+                defaultId: 0,
+                cancelId: 1,
+                title: "Update Available — Jahtaria Visa Intelligence",
+                message: `Version ${newest.tag_name} is available! (You are running v${currentVersion})`,
+                detail:
+                  "Download and run the new Setup.exe right over your current install. All your local accounts, clients, and Obsidian vault are preserved automatically.",
+              })
+              .then(({ response }) => {
+                if (response === 0) {
+                  shell.openExternal((exeAsset && exeAsset.browser_download_url) || newest.html_url);
+                }
+              });
+          } else if (manual) {
+            dialog.showMessageBox(mainWindow || undefined, {
+              type: "info",
+              title: "Up to Date",
+              message: `You are on the latest version (v${currentVersion}).`,
+            });
+          }
+        } catch (err) {
+          if (manual) {
+            dialog.showMessageBox(mainWindow || undefined, {
+              type: "warning",
+              title: "Update Check Failed",
+              message: "Could not check GitHub Releases right now.",
+              detail: err.message,
+            });
+          }
+        }
+      });
+    }
+  );
+  req.on("error", (err) => {
+    if (manual) {
+      dialog.showMessageBox(mainWindow || undefined, {
+        type: "warning",
+        title: "Update Check Failed",
+        message: "Could not reach GitHub Releases.",
+        detail: err.message,
+      });
+    }
+  });
+}
 
 function getDataDir() {
   if (app.isPackaged) {
@@ -90,6 +172,11 @@ function buildMenu() {
     {
       label: "Jahtaria Alpha",
       submenu: [
+        {
+          label: "Check for Updates...",
+          click: () => checkForUpdates(true),
+        },
+        { type: "separator" },
         {
           label: "Open Obsidian Vault Folder",
           click: () => {
@@ -172,6 +259,10 @@ app.whenReady().then(async () => {
     await waitForHealth(`${APP_URL}/health`, 90);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.loadURL(`${APP_URL}/login/`);
+    }
+    // Check GitHub Releases quietly in the background 6 seconds after launch
+    if (app.isPackaged) {
+      setTimeout(() => checkForUpdates(false), 6000);
     }
   } catch (err) {
     dialog.showErrorBox(

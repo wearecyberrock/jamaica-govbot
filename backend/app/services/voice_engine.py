@@ -104,30 +104,50 @@ def save_voice_config(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     return get_voice_config(db)
 
 
+def _voice_ssl_verify() -> object:
+    try:
+        import ssl
+        import truststore
+
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        pass
+    try:
+        import certifi
+
+        return certifi.where()
+    except Exception:
+        return True
+
+
 def _elevenlabs_tts(text: str, api_key: str, voice_id: str) -> bytes:
+    import httpx
+
     vid = voice_id.strip() or ELEVEN_DEFAULT_VOICE
-    req = urllib.request.Request(
-        f"{ELEVEN_API}{vid}?output_format=mp3_44100_128",
-        method="POST",
-        data=json.dumps({"text": text, "model_id": ELEVEN_DEFAULT_MODEL}).encode("utf-8"),
-        headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
+    with httpx.Client(timeout=30.0, verify=_voice_ssl_verify()) as client:
+        resp = client.post(
+            f"{ELEVEN_API}{vid}?output_format=mp3_44100_128",
+            json={"text": text, "model_id": ELEVEN_DEFAULT_MODEL},
+            headers={"xi-api-key": api_key, "Accept": "audio/mpeg"},
+        )
+        resp.raise_for_status()
+        return resp.content
 
 
 def _fish_tts(text: str, api_key: str, voice_id: str) -> bytes:
+    import httpx
+
     body = {"text": text, "format": "mp3", "mp3_bitrate": 128}
     if voice_id.strip():
         body["reference_id"] = voice_id.strip()
-    req = urllib.request.Request(
-        FISH_API,
-        method="POST",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "audio/mpeg"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
+    with httpx.Client(timeout=30.0, verify=_voice_ssl_verify()) as client:
+        resp = client.post(
+            FISH_API,
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "audio/mpeg"},
+        )
+        resp.raise_for_status()
+        return resp.content
 
 
 async def _edge_tts_bytes(text: str, voice: str, rate: str = "+0%", pitch: str = "+0Hz") -> bytes:
