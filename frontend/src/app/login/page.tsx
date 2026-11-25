@@ -454,7 +454,7 @@ export default function LoginPage() {
                   required
                   value={accessCode}
                   onChange={(e) => setAccessCode(e.target.value)}
-                  placeholder="JAH-C034"
+                  placeholder="JAH-XXXX"
                 />
                 <p className="text-[11px] text-slate-400 mt-1.5">
                   Enter the personal Case Code provided by your {displayAgency} advisor.

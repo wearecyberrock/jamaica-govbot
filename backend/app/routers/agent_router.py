@@ -1379,6 +1379,8 @@ def unified_agent_command(
                         conversation_id=conv_id,
                         history=history,
                         extra_context="\n".join(extra_parts),
+                        user_role=role,
+                        actor_name=user.full_name,
                     )
                     reply = res["reply"]
                     citations = res.get("citations", [])

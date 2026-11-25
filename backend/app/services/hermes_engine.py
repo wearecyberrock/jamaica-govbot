@@ -853,6 +853,8 @@ def answer_customer_question(
     conversation_id: str | None = None,
     history: list[dict[str, str]] | None = None,
     extra_context: str = "",
+    user_role: str = "customer",
+    actor_name: str = "",
 ) -> dict[str, Any]:
     """Live AI Assistant grounded in verified U.S./Jamaica sources with full multi-turn memory and honest error reporting."""
     relevant_sources, had_match = _gather_gov_context(db, message)
@@ -865,8 +867,17 @@ def answer_customer_question(
         else load_conversation_history(db, conversation_id, max_turns=10, exclude_last_user_msg=message)
     )
 
+    role_directive = (
+        f"Current User Role: Agency {user_role.upper()} ({actor_name or 'Agency Team Member'}). "
+        "Address them as an agency operator/executive managing Jamaican U.S. visa cases, analytics, documents, and Gmail automation — "
+        "do NOT greet or treat them as a visa applicant filling out their own DS-160."
+        if user_role in ("ceo", "staff")
+        else "Current User Role: Client / Visa Applicant. Address them warmly as an applicant preparing truthfully for their U.S. Embassy Kingston appointment."
+    )
+
     system_prompt = (
         f"{COMPLIANCE_SYSTEM_PROMPT}\n\n"
+        f"{role_directive}\n\n"
         f"Verified Official Reference Knowledge (use and cite when relevant to the user's question):\n"
         f"{chr(10).join(context_lines)}{case_ctx}"
     )

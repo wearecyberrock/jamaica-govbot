@@ -357,7 +357,7 @@ export function ChatQuestionnaireCard({
                   saveAnswer();
                 }
               }}
-              placeholder="Select an option above or type a custom truthful answer..."
+              placeholder="Type answer or pick above…"
               className="g-input flex-1 text-xs py-2"
             />
             <button

@@ -246,15 +246,15 @@ export function ClientSpreadsheetView({
       {/* Search + Active/Historical + Easy Sort Tab Bar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[160px]">
-          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter by name, case ID, parish, occupation..."
-            className="g-input text-xs py-1.5 pl-8 w-full"
+            className="g-input text-xs py-1.5 !pl-9 w-full"
           />
         </div>
-        <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10 text-[11px]">
+        <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10 text-[11px] shrink-0">
           {(["active", "historical", "all"] as const).map((g) => (
             <button
               key={g}
@@ -270,7 +270,7 @@ export function ClientSpreadsheetView({
       </div>
 
       {/* Easy Sort Tab Strip */}
-      <div className="flex items-center gap-1 overflow-x-auto pb-1 text-[11px]">
+      <div className="flex flex-wrap items-center gap-1 pb-1 text-[11px]">
         <span className="text-slate-500 font-semibold mr-1 inline-flex items-center gap-1 shrink-0">
           <ArrowUpDown className="w-3 h-3" /> Sort:
         </span>

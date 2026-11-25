@@ -578,6 +578,7 @@ function ClientInspectorSubPanel({
   const [msg, setMsg] = useState("");
   const [genCount, setGenCount] = useState("5");
   const [genBusy, setGenBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
   const [openTipIds, setOpenTipIds] = useState<Record<number, boolean>>({});
   const [vaultCat, setVaultCat] = useState("all");
   const [officialDocs, setOfficialDocs] = useState<OfficialDocItem[]>([]);
@@ -700,7 +701,9 @@ function ClientInspectorSubPanel({
       {/* SUBVIEW: OVERVIEW & FLAGS */}
       {view === "overview" && (
         <div className="space-y-2.5">
-          {client.risk_flags.map((f) => (
+          {client.risk_flags
+            .filter((f) => f.category !== "ai_questionnaire")
+            .map((f) => (
             <div
               key={f.id}
               className={`g-card p-3 space-y-1 border-l-2 ${
@@ -744,23 +747,30 @@ function ClientInspectorSubPanel({
                 {onImportQuestionnaireToChat && (
                   <button
                     type="button"
+                    disabled={importBusy || genBusy}
                     onClick={async () => {
-                      let payload = await apiFetch<ChatQuestionnairePayload>(`/api/clients/${client.case_id}/questionnaire`);
-                      if (payload.items.length === 0) {
-                        const gen = await apiFetch<{ questionnaire: ChatQuestionnairePayload }>(
-                          `/api/clients/${client.case_id}/questionnaire/generate`,
-                          { method: "POST", body: JSON.stringify({ count: 5, focus: "live readiness & risk gaps" }) }
-                        );
-                        payload = gen.questionnaire;
-                        await load();
+                      if (importBusy) return;
+                      setImportBusy(true);
+                      try {
+                        let payload = await apiFetch<ChatQuestionnairePayload>(`/api/clients/${client.case_id}/questionnaire`);
+                        if (payload.items.length === 0) {
+                          const gen = await apiFetch<{ questionnaire: ChatQuestionnairePayload }>(
+                            `/api/clients/${client.case_id}/questionnaire/generate`,
+                            { method: "POST", body: JSON.stringify({ count: 5, focus: "live readiness & risk gaps" }) }
+                          );
+                          payload = gen.questionnaire;
+                          await load();
+                        }
+                        onImportQuestionnaireToChat(payload);
+                        flash(`Imported ${payload.items.length} question(s) into chat!`);
+                      } finally {
+                        setImportBusy(false);
                       }
-                      onImportQuestionnaireToChat(payload);
-                      flash(`Imported ${payload.items.length} question(s) into chat!`);
                     }}
-                    className="px-2.5 py-1 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/30 text-blue-200 text-[11px] font-medium inline-flex items-center gap-1 transition"
+                    className="px-2.5 py-1 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/30 text-blue-200 text-[11px] font-medium inline-flex items-center gap-1 transition disabled:opacity-50"
                     title="Pop this exact questionnaire cleanly into the chat area"
                   >
-                    <MessageSquarePlus className="w-3 h-3" /> Import into Chat
+                    <MessageSquarePlus className="w-3 h-3" /> {importBusy ? "Importing…" : "Import into Chat"}
                   </button>
                 )}
                 <input
@@ -2298,7 +2308,7 @@ function SettingsSubPanel({
         className="g-card p-3.5 space-y-2.5"
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-white">3. Voice Engine (Mock Interviews &amp; Hands-Free AI)</span>
+          <span className="text-xs font-semibold text-white">6. Voice Engine (Mock Interviews &amp; Hands-Free AI)</span>
           <button type="button" onClick={testVoice} className="text-[11px] text-emerald-400 hover:underline font-semibold">
             Test Voice 🔊
           </button>
@@ -2333,7 +2343,7 @@ function SettingsSubPanel({
       {/* 4. BUILT-IN /mcp EXPORT (Connect Claude Desktop, ChatGPT & Antigravity on Your PC) */}
       <div className="g-card p-3.5 space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-white">4. Connect Antigravity / Claude / ChatGPT (/mcp)</span>
+          <span className="text-xs font-semibold text-white">7. Connect Antigravity / Claude / ChatGPT (/mcp)</span>
           <div className="flex gap-2">
             <button
               onClick={() => {
@@ -2370,7 +2380,7 @@ function SettingsSubPanel({
           }}
           className="g-card p-3.5 space-y-2"
         >
-          <div className="text-xs font-semibold text-white">6. White-Label Agency Branding (CEO)</div>
+          <div className="text-xs font-semibold text-white">8. White-Label Agency Branding (CEO)</div>
           <div className="flex gap-2">
             <input className="g-input text-xs flex-1" value={agencyName} onChange={(e) => setAgencyName(e.target.value)} />
             <button type="submit" className="g-btn-primary px-3 text-xs shrink-0">Save</button>

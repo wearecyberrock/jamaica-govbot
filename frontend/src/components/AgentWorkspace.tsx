@@ -817,25 +817,29 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         </div>
 
         {/* Top Bar with Voice Mode Controls & Side Panel Toggle */}
-        <header className="h-12 px-4 flex items-center justify-between border-b border-[#e5b84b]/10 shrink-0 gap-2 relative z-10">
-          <div className="flex items-center gap-2 text-xs text-slate-400 min-w-0">
+        <header className="h-12 px-3 flex items-center justify-between border-b border-[#e5b84b]/10 shrink-0 gap-2 relative z-10 overflow-hidden">
+          <div className="flex items-center gap-1.5 text-xs text-slate-400 min-w-0 flex-1 overflow-hidden">
             {!sidebarOpen && (
-              <button onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300">
+              <button onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 shrink-0">
                 <PanelLeft className="w-4 h-4" />
               </button>
             )}
-            <DoctorBirdWatermark variant="emblem" className="w-6 h-5 shrink-0 opacity-90" />
-            <span className="font-semibold text-slate-100 truncate">Visa Intelligence Agent</span>
-            <span className="hidden md:inline-block px-1.5 py-0.5 rounded bg-emerald-500/10 border border-[#e5b84b]/25 text-[10px] font-medium text-[#e5b84b] shrink-0">
-              Kingston JA
+            <DoctorBirdWatermark variant="emblem" className="w-5 h-4 shrink-0 opacity-90" />
+            <span className={`font-semibold text-slate-100 truncate ${rightPanel ? "hidden xl:inline" : ""}`}>
+              Visa Intelligence Agent
             </span>
+            {!rightPanel && (
+              <span className="hidden xl:inline-block px-1.5 py-0.5 rounded bg-emerald-500/10 border border-[#e5b84b]/25 text-[10px] font-medium text-[#e5b84b] shrink-0">
+                Kingston JA
+              </span>
+            )}
             {activeCaseId && (
               <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/25 font-mono text-[11px] shrink-0">
                 {activeCaseId}
               </span>
             )}
             {user.all_tiers && (
-              <div className="hidden lg:flex items-center gap-0.5 bg-white/[0.05] border border-[#e5b84b]/25 rounded-lg p-0.5 ml-1">
+              <div className="flex items-center gap-0.5 bg-white/[0.05] border border-[#e5b84b]/25 rounded-lg p-0.5 shrink-0">
                 {(
                   [
                     ["ceo", "/ceo", "CEO"],
@@ -846,12 +850,12 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                   <button
                     key={r}
                     onClick={() => router.push(href)}
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap transition ${
                       effectiveRole === r
                         ? "bg-emerald-600 text-white"
                         : "text-slate-400 hover:text-white"
                     }`}
-                    title={`Switch testaccount to ${lbl} Tier`}
+                    title={`Preview ${lbl} Tier`}
                   >
                     {lbl}
                   </button>
@@ -861,23 +865,23 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Voice Persona + Auto-Speak Toggle (Available to CEO, Staff & Customers!) */}
+            {/* Voice Persona + Auto-Speak Toggle */}
             <select
               value={voicePersona}
               onChange={(e) => setVoicePersona(e.target.value)}
-              className="hidden sm:block bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-slate-300 outline-none"
+              className={`${rightPanel ? "hidden xl:inline-block" : "hidden sm:inline-block"} h-7 bg-white/5 border border-white/10 rounded-lg px-2 text-[11px] text-slate-300 outline-none whitespace-nowrap shrink-0`}
               title="Voice Persona"
             >
               <option value="advisor_ja" className="bg-[#171a21]">Advisor Voice</option>
-              <option value="officer_us" className="bg-[#171a21]">U.S. Officer Voice</option>
-              <option value="advisor_male" className="bg-[#171a21]">Specialist (Male)</option>
+              <option value="officer_us" className="bg-[#171a21]">U.S. Officer</option>
+              <option value="advisor_male" className="bg-[#171a21]">Specialist</option>
             </select>
             <button
               onClick={() => {
                 if (speaking) stopSpeaking();
                 setVoiceMode(!voiceMode);
               }}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium inline-flex items-center gap-1.5 transition ${
+              className={`h-7 px-2 rounded-lg text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition ${
                 voiceMode
                   ? "bg-emerald-500/20 text-emerald-300 border border-emerald-400/30"
                   : "bg-white/5 text-slate-400 hover:text-white border border-white/10"
@@ -885,7 +889,9 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
               title="Toggle Voice Mode (AI speaks replies aloud)"
             >
               {voiceMode ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-              <span className="hidden md:inline">{speaking ? "Speaking…" : voiceMode ? "Voice On" : "Voice"}</span>
+              <span className={rightPanel ? "hidden xl:inline" : "hidden md:inline"}>
+                {speaking ? "Speaking…" : voiceMode ? "Voice On" : "Voice"}
+              </span>
             </button>
 
             <button
@@ -900,10 +906,13 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                         : { panel: "customer_case", case_id: user.linked_case_id || "C034", subview: "overview", title: "My Case Status" }
                     )
               }
-              className="g-btn-ghost px-2.5 py-1.5 text-xs inline-flex items-center gap-1.5"
+              className="g-btn-ghost h-7 px-2 text-xs inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+              title={rightPanel ? "Hide Side Panel" : "Open Side Panel"}
             >
               <PanelRight className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{rightPanel ? "Hide Panel" : "Side Panel"}</span>
+              <span className={rightPanel ? "hidden xl:inline" : "hidden sm:inline"}>
+                {rightPanel ? "Hide" : "Side Panel"}
+              </span>
             </button>
           </div>
         </header>
@@ -1251,17 +1260,17 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                 onSend={() => sendMessage()}
                 onOpenPanel={openPanel}
               />
-              <div className="flex items-center justify-between text-[11px] text-slate-500 px-2">
-                <div className="flex gap-2">
-                  <button onClick={() => setMode("chat")} className={mode === "chat" ? "text-slate-200 font-semibold" : "hover:text-slate-300"}>
+              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 px-2">
+                <div className="flex items-center gap-2 shrink-0">
+                  <button onClick={() => setMode("chat")} className={`whitespace-nowrap ${mode === "chat" ? "text-slate-200 font-semibold" : "hover:text-slate-300"}`}>
                     Chat
                   </button>
                   <span>•</span>
-                  <button onClick={() => setMode("task")} className={mode === "task" ? "text-blue-300 font-semibold" : "hover:text-slate-300"}>
+                  <button onClick={() => setMode("task")} className={`whitespace-nowrap ${mode === "task" ? "text-blue-300 font-semibold" : "hover:text-slate-300"}`}>
                     Task Mode
                   </button>
                 </div>
-                <span>Drag &amp; drop PDFs/images into chat • Truthful visa prep only</span>
+                <span className="truncate">Drop PDFs, ZIPs, CSVs or images • Truthful visa prep</span>
               </div>
             </div>
           </div>
@@ -1305,15 +1314,15 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             onSelectCaseForChat={(cid) => selectActiveClient(cid)}
             onOpenStudio={(target) => setStudioTarget(target)}
             onImportQuestionnaireToChat={(payload) => {
-              setActiveCaseId(payload.case_id);
-              setTurns((prev) => [
-                ...prev,
-                {
-                  sender: "assistant",
-                  content: `Imported **${payload.case_id} — ${payload.client_name}** questionnaire (**${payload.total_count} questions**) into chat. Click **Tips** on any question for an explanation, pick a choice or type your answer, or click **+ Add More** to generate any number of additional questions.`,
-                  questionnaire: payload,
-                },
-              ]);
+              selectActiveClient(payload.case_id);
+              setTurns((prev) => {
+                const existingIdx = prev.findIndex((t) => t.questionnaire?.case_id === payload.case_id);
+                const msgText = `Imported **${payload.case_id} — ${payload.client_name}** questionnaire (**${payload.total_count} questions**) into chat. Click **Tips** on any question for guidance, pick a choice or type your answer, or click **+ Add More** anytime.`;
+                if (existingIdx >= 0) {
+                  return prev.map((t, i) => (i === existingIdx ? { ...t, content: msgText, questionnaire: payload } : t));
+                }
+                return [...prev, { sender: "assistant", content: msgText, questionnaire: payload }];
+              });
             }}
             onBrandingUpdated={(b) => {
               setBranding(b);
@@ -1536,7 +1545,7 @@ function PromptPill({
 
         <input
           className="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-slate-100 placeholder:text-slate-500 px-1"
-          placeholder={listening ? "Listening… speak now" : "Ask anything, paste an image/key/MCP/CSV, or drop docs..."}
+          placeholder={listening ? "Listening… speak now" : "Ask anything, paste keys or drop files…"}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onPaste={(e) => {
@@ -1558,7 +1567,7 @@ function PromptPill({
         />
 
         {/* Grouped Model Picker (Subscriptions / Local / API Keys) */}
-        <div className="hidden sm:flex items-center relative max-w-[175px] shrink-0">
+        <div className="hidden sm:flex items-center relative max-w-[210px] shrink-0">
           {(() => {
             const flatItems = (modelCatalog?.groups || []).flatMap((g: any) => g.items || []);
             const provItem = flatItems.find((i: any) => i.provider === activeProvider);
@@ -1573,7 +1582,7 @@ function PromptPill({
               <select
                 value={selectVal}
                 onChange={(e) => onSelectModel(e.target.value)}
-                className="appearance-none bg-transparent text-xs text-slate-300 hover:text-white pr-5 pl-1.5 py-1 outline-none cursor-pointer truncate max-w-[175px]"
+                className="appearance-none bg-transparent text-xs text-slate-300 hover:text-white pr-5 pl-1.5 py-1 outline-none cursor-pointer truncate max-w-[210px]"
                 title={`Active AI: ${activeProvider} / ${effectiveModel}`}
               >
                 {(modelCatalog?.groups || []).map((g: any) => (
