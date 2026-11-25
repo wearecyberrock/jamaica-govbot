@@ -15,7 +15,7 @@ class Base(DeclarativeBase):
 
 
 is_sqlite = DATABASE_URL.startswith("sqlite")
-connect_args = {"check_same_thread": False} if is_sqlite else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if is_sqlite else {}
 
 engine = create_engine(
     DATABASE_URL,
@@ -29,6 +29,8 @@ if is_sqlite:
     def _set_sqlite_pragma(dbapi_conn, _connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA busy_timeout=30000;")
         cursor.execute("PRAGMA foreign_keys=ON;")
         cursor.close()
 

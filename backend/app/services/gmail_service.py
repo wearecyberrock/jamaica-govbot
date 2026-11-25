@@ -857,21 +857,25 @@ def serialize_email_log(m: EmailMessageLog) -> dict[str, Any]:
     }
 
 
+def _run_cron_tick_sync(session_factory, poll_inbox_now_flag: bool) -> None:
+    db = session_factory()
+    try:
+        run_email_automation_cycle(db, force=False)
+        if poll_inbox_now_flag:
+            cfg = get_gmail_config(db)
+            if cfg["smtp_ready"] and cfg["imap_enabled"]:
+                poll_gmail_inbox(db, limit=10)
+    finally:
+        db.close()
+
+
 async def background_cron_worker(session_factory) -> None:
-    """In-app async cron loop: evaluates due Gmail rules every 60s and optionally polls IMAP every 15m."""
+    """In-app async cron loop: evaluates due Gmail rules every 60s in a worker thread without blocking FastAPI."""
     tick = 0
     await asyncio.sleep(15)
     while True:
         try:
-            db = session_factory()
-            try:
-                run_email_automation_cycle(db, force=False)
-                if tick % 15 == 0:
-                    cfg = get_gmail_config(db)
-                    if cfg["smtp_ready"] and cfg["imap_enabled"]:
-                        poll_gmail_inbox(db, limit=10)
-            finally:
-                db.close()
+            await asyncio.to_thread(_run_cron_tick_sync, session_factory, (tick % 15 == 0))
         except asyncio.CancelledError:
             break
         except Exception:

@@ -1142,6 +1142,8 @@ def unified_agent_command(
     history = load_conversation_history(db, conv_id, max_turns=10)
     user_msg_row = ChatMessage(session_id=conv_id, case_id=req.case_id or user.linked_case_id, user_role=role, sender="user", content=msg)
     db.add(user_msg_row)
+    # Commit BEFORE slow AI/LLM network calls so SQLite never holds an open write lock!
+    db.commit()
 
     ui_panel: dict[str, Any] | None = None
     tool_trace: list[dict[str, Any]] = []

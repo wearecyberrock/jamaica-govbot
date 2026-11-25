@@ -721,7 +721,7 @@ def call_llm_detailed(
                 "configured_providers": [],
             }
 
-    # 7. Google Gemini API Key
+    # 7. Google Gemini API Key (with automatic 503/429 high-demand retry & backup Gemini model failover)
     if provider in ("auto", "gemini"):
         gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", "")).strip()
         if gem_key:
@@ -729,29 +729,48 @@ def call_llm_detailed(
             gem_model = model.replace("gemini/", "") if "gemini" in model else "gemini-3.1-flash-lite"
             if gem_model in ("gemini-2.0-flash", "gemini-2.5-flash"):
                 gem_model = "gemini-3.1-flash-lite"
-            try:
-                with httpx.Client(timeout=35.0) as client:
-                    r = client.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/{gem_model}:generateContent?key={gem_key}",
-                        json={
-                            "systemInstruction": {"parts": [{"text": system_prompt}]},
-                            "contents": _build_gemini_contents(clean_history, user_prompt),
-                        },
-                    )
-                    if r.status_code == 200:
-                        cands = r.json().get("candidates", [])
-                        if cands:
-                            txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", [])).strip()
-                            if txt:
-                                return {"text": txt, "provider": f"gemini:{gem_model}", "error": None, "configured_providers": configured_providers}
-                        last_failed_provider = "gemini"
-                        errors.append(f"Gemini ({gem_model}) [HTTP 200]: Empty response candidates.")
-                    else:
-                        last_failed_provider = "gemini"
-                        errors.append(f"Gemini ({gem_model}) [HTTP {r.status_code}]: {_extract_error_detail(r.text)}")
-            except Exception as exc:
-                last_failed_provider = "gemini"
-                errors.append(f"Gemini ({gem_model}) [Connection Error]: {str(exc)[:300]}")
+            # Build ordered candidate list: requested model first, then resilient fallbacks on 503/429
+            candidates: list[str] = []
+            for m_cand in (gem_model, "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-latest"):
+                if m_cand not in candidates:
+                    candidates.append(m_cand)
+            last_gem_err = ""
+            for idx_m, cand_model in enumerate(candidates):
+                try:
+                    with httpx.Client(timeout=35.0) as client:
+                        r = client.post(
+                            f"https://generativelanguage.googleapis.com/v1beta/models/{cand_model}:generateContent?key={gem_key}",
+                            json={
+                                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                                "contents": _build_gemini_contents(clean_history, user_prompt),
+                            },
+                        )
+                        if r.status_code == 200:
+                            cands = r.json().get("candidates", [])
+                            if cands:
+                                txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", [])).strip()
+                                if txt:
+                                    return {"text": txt, "provider": f"gemini:{cand_model}", "error": None, "configured_providers": configured_providers}
+                            last_gem_err = f"Gemini ({cand_model}) [HTTP 200]: Empty response candidates."
+                        elif r.status_code in (429, 500, 502, 503, 504):
+                            last_gem_err = f"Gemini ({cand_model}) [HTTP {r.status_code}]: {_extract_error_detail(r.text)}"
+                            if idx_m < len(candidates) - 1:
+                                time.sleep(0.7)
+                                continue
+                        elif r.status_code == 404 and idx_m < len(candidates) - 1:
+                            last_gem_err = f"Gemini ({cand_model}) [HTTP 404]: {_extract_error_detail(r.text)}"
+                            continue
+                        else:
+                            last_gem_err = f"Gemini ({cand_model}) [HTTP {r.status_code}]: {_extract_error_detail(r.text)}"
+                            break
+                except Exception as exc:
+                    last_gem_err = f"Gemini ({cand_model}) [Connection Error]: {str(exc)[:300]}"
+                    if idx_m < len(candidates) - 1:
+                        time.sleep(0.5)
+                        continue
+            last_failed_provider = "gemini"
+            if last_gem_err:
+                errors.append(last_gem_err)
         elif provider == "gemini":
             return {
                 "text": None,
