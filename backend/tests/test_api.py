@@ -236,6 +236,15 @@ def test_ai_engine_fixes_sse_errors_and_history(monkeypatch):
         assert ok_res["provider_used"].startswith("chatgpt-codex:")
         assert captured["history"] == prior_turns
         assert captured["user_prompt"] == "What is my name?"
+
+        # 5. Typo-tolerant case ID detection (CO33, co27, case 34)
+        from app.routers.agent_router import _detect_case_id, _wants_questionnaire_generation
+
+        assert _detect_case_id(db, "CO33", "C034") == "C033"
+        assert _detect_case_id(db, "co27", "C034") == "C027"
+        assert _detect_case_id(db, "what should I do for case 34?", None) == "C034"
+        assert _wants_questionnaire_generation("genereate folloup question for co34") is True
+        assert _wants_questionnaire_generation("prepare question for Marcus campbell") is True
     finally:
         # Clean up test settings
         set_setting(db, "ai_provider", "auto", is_secret=False, category="ai")

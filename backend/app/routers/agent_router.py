@@ -58,9 +58,20 @@ class GenerateQuestionsRequest(BaseModel):
 
 
 def _detect_case_id(db: Session, text: str, fallback: str | None) -> str | None:
-    m = re.search(r"\b(C\d{3})\b", text.upper())
+    """Detect case IDs tolerating common typos like CO33, co27, C-034, case 34, or client names."""
+    upper = text.upper()
+    # Match C034, CO34 (letter O instead of zero), C-034, C34
+    m = re.search(r"\bC[-\s]?[0O]?(\d{1,3})\b", upper)
     if m:
-        return m.group(1)
+        num = int(m.group(1))
+        if 1 <= num <= 999:
+            return f"C{num:03d}"
+    # Match "case 33", "case #27"
+    m_case = re.search(r"\bCASE\s*#?\s*0?(\d{1,3})\b", upper)
+    if m_case:
+        num = int(m_case.group(1))
+        if 1 <= num <= 999:
+            return f"C{num:03d}"
     low = text.lower()
     if len(low) >= 4:
         for c in db.query(ClientCase).all():
@@ -70,6 +81,34 @@ def _detect_case_id(db: Session, text: str, fallback: str | None) -> str | None:
                 if any(p in low for p in parts):
                     return c.case_id
     return fallback
+
+
+def _wants_questionnaire_generation(low: str) -> bool:
+    """Fuzzy detection for generating/preparing follow-up questions or a questionnaire (tolerates typos)."""
+    has_action = any(k in low for k in ("generat", "genereat", "creat", "prepar", "make", "build", "add", "new"))
+    has_q_word = any(
+        k in low
+        for k in (
+            "questionn",
+            "questiona",
+            "follow-up",
+            "followup",
+            "folloup",
+            "follow up",
+            "questions",
+            "question for",
+            "on the fly",
+        )
+    )
+    return has_action and has_q_word
+
+
+def _wants_explicit_panel_only(low: str) -> bool:
+    """True only when the user typed a short bare navigation command like 'open case c033' or 'CO33'."""
+    stripped = re.sub(r"[^a-z0-9\s]", "", low).strip()
+    if re.fullmatch(r"(?:open\s+|show\s+|view\s+|go\s+to\s+)?(?:case\s+)?c[0o]?\d{1,3}", stripped):
+        return True
+    return False
 
 
 def _match_official_pdf(db: Session, low: str) -> str | None:
@@ -566,12 +605,12 @@ def unified_agent_command(
                 ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Case {target_cid}"}
             elif proposed.action_type == "update_branding":
                 ui_panel = {"panel": "settings", "title": "Settings & Branding"}
-        elif target_cid and any(k in low for k in ("generate question", "questionnaire", "on the fly", "follow-up question")):
+        elif target_cid and _wants_questionnaire_generation(low):
             q_res = generate_dynamic_questionnaire(target_cid, GenerateQuestionsRequest(focus=msg), user=user, db=db)
             qs = q_res["questions_added"]
             ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Questionnaire — {target_cid}"}
             reply = (
-                f"Generated **{len(qs)} dynamic follow-up questions** for **{target_cid}** and synced them to the interactive side panel:\n\n"
+                f"Generated **{len(qs)} dynamic follow-up questions** for **{target_cid}** and opened the interactive Questionnaire in the side panel:\n\n"
                 + "\n".join(f"- **{q['title']}:** {q['question']}" for q in qs)
             )
             provider = q_res["provider_used"]
@@ -592,35 +631,36 @@ def unified_agent_command(
                         "sync obsidian",
                     )
                 )
-                and not any(k in low for k in ("ceo", "analytics", "graph", "chart", "recall"))
+                and not any(k in low for k in ("ceo", "analytics", "graph", "chart", "recall", "scenario", "senario", "possible question"))
             )
 
+            # Decide which companion side panel (if any) to open alongside the AI reply
             if role == "ceo" and any(k in low for k in ("ceo", "analytics", "graph", "chart", "kpi", "revenue", "approval rate", "recall", "metrics", "overview", "executive")):
                 ui_panel = {"panel": "ceo_analytics", "title": "CEO Executive Analytics & Graphs"}
             elif role == "ceo" and any(k in low for k in ("staff", "team", "create account", "new user", "add staff", "manage user", "logins")):
                 ui_panel = {"panel": "team", "title": "Team & Staff Account Manager"}
-            elif any(k in low for k in ("voice", "elevenlabs", "fish audio", "speech", "setting", "setup", "subscription", "codex", "claude", "chatgpt", "antigravity", "api key", "ollama", "composio", "mcp", "brand")):
+            elif any(k in low for k in ("open setting", "voice setting", "elevenlabs", "fish audio", "subscription", "codex", "claude", "chatgpt", "antigravity", "api key", "ollama", "composio", "mcp", "brand")):
                 ui_panel = {"panel": "settings", "title": "AI Subscriptions, Voice & Setup"}
-            elif any(k in low for k in ("obsidian", "vault", "wikilink", "note")):
+            elif any(k in low for k in ("obsidian", "vault", "wikilink")):
                 note_path = f"Clients/{target_cid}.md" if target_cid and "client" in low else "Index.md"
                 ui_panel = {"panel": "obsidian", "path": note_path, "title": f"Obsidian Vault — {note_path}"}
             elif any(k in low for k in ("database", "sql", "table", "manifest", "csv", "spreadsheet", "import")):
                 tbl = "source_manifest" if "manifest" in low else ("gov_sources" if "source" in low else "clients")
                 ui_panel = {"panel": "database", "table": tbl, "title": f"Database Explorer ({tbl})"}
-            elif any(k in low for k in ("pdf", "pica", "ds-5535", "ds5535", "ds-157", "ds157", "ds-156", "birreq", "passport form", "blueprint")) and not any(k in low for k in ("generate", "draft", "create")):
+            elif any(k in low for k in ("pdf", "pica", "ds-5535", "ds5535", "ds-157", "ds157", "ds-156", "birreq", "passport form", "blueprint", "official doc", "show doc", "document")) and not any(k in low for k in ("generate", "draft", "create")):
                 doc_key = _match_official_pdf(db, low)
                 ui_panel = {"panel": "official_pdfs", "doc_key": doc_key, "title": "Official Government PDF Viewer"}
-            elif any(k in low for k in ("source", "scrape", "embassy link", "gov link", "website", "fees")):
+            elif any(k in low for k in ("source", "scrape", "embassy link", "gov link", "website")):
                 ui_panel = {"panel": "gov_sources", "title": "Official Scraped Gov Sources"}
             elif any(k in low for k in ("all client", "list client", "pipeline", "kanban", "all case", "show case")):
                 ui_panel = {"panel": "clients_list", "title": "Client Pipeline & Cases"}
             elif target_cid:
                 sub = "overview"
-                if any(k in low for k in ("intake", "edit", "form", "questionnaire")):
+                if any(k in low for k in ("intake", "edit", "form", "questionn", "questiona", "follow-up", "followup", "folloup")):
                     sub = "intake"
-                elif any(k in low for k in ("interview", "mock", "predict", "freeze")):
+                elif any(k in low for k in ("interview", "mock", "predict", "freeze", "scenario", "senario", "possible question", "questions")):
                     sub = "interview"
-                elif any(k in low for k in ("roadmap", "image", "worksheet", "checklist", "letter", "docx", "generate", "draft", "approve", "asset", "file")):
+                elif any(k in low for k in ("roadmap", "image", "worksheet", "checklist", "letter", "docx", "generate", "draft", "approve", "asset", "file", "doc")):
                     sub = "blueprints"
                 elif any(k in low for k in ("journal", "history", "timeline", "log")):
                     sub = "journal"
@@ -665,50 +705,61 @@ def unified_agent_command(
                         "title": f"Draft Deliverables — {target_cid}",
                     }
             else:
+                # Build rich live workspace context and ALWAYS let the live AI respond naturally!
+                client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first() if target_cid else None
+                extra_parts: list[str] = []
+                if ui_panel:
+                    extra_parts.append(
+                        f"UI Action Already Performed: Opened the right-hand side panel '{ui_panel.get('title')}' "
+                        f"(panel={ui_panel.get('panel')}, subview={ui_panel.get('subview', 'default')})."
+                    )
                 if ui_panel and ui_panel["panel"] == "ceo_analytics":
                     total = db.query(ClientCase).count()
                     approved = db.query(ClientCase).filter(ClientCase.outcome == "approved").count()
                     refused = db.query(ClientCase).filter(ClientCase.outcome == "refused").count()
-                    reply = (
-                        f"Opened your **CEO Executive Analytics & Graphs** in the side panel.\n\n"
-                        f"- **Total Portfolio:** {total} cases ({approved} approved, {refused} refused)\n"
-                        f"- **Live Visuals:** Reported Approval donut chart, Pipeline Stage bars, Top Denial-Risk flags, and Compliant Prediction Recall.\n\n"
-                        f"You can also edit anything right from chat — e.g. *\"Update C034 gross salary to 310000\"* or *\"Change agency name to ...\"*."
-                    )
-                elif ui_panel and ui_panel["panel"] == "client" and target_cid:
-                    c = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first()
-                    if c:
-                        red_n = sum(1 for f in c.risk_flags if f.severity == "red" and not f.resolved)
-                        amber_n = sum(1 for f in c.risk_flags if f.severity == "amber" and not f.resolved)
+                    extra_parts.append(f"Live Agency Portfolio KPIs: Total={total} cases, Approved={approved}, Refused={refused}.")
+                elif ui_panel and ui_panel["panel"] == "official_pdfs":
+                    docs = db.query(OfficialDocument).all()
+                    doc_list = ", ".join(f"{d.title} ({d.filename})" for d in docs[:10])
+                    extra_parts.append(f"Available Official Government PDFs & Blueprints in the side panel: {doc_list}.")
+                elif ui_panel and ui_panel["panel"] == "clients_list":
+                    top_cases = db.query(ClientCase).order_by(ClientCase.updated_at.desc()).limit(10).all()
+                    case_list = ", ".join(f"{c.case_id} ({c.full_name or c.pseudonym}, {c.standing_score}%)" for c in top_cases)
+                    extra_parts.append(f"Recent Clients in Pipeline: {case_list}.")
+
+                # For bare navigation commands when no LLM is connected, or if live AI answers directly:
+                res = answer_customer_question(
+                    db,
+                    msg,
+                    client,
+                    conversation_id=conv_id,
+                    history=history,
+                    extra_context="\n".join(extra_parts),
+                )
+                reply = res["reply"]
+                citations = res.get("citations", [])
+                provider = res["provider_used"]
+
+                # If no live AI is connected yet AND a panel was opened, give a crisp panel-specific summary
+                if provider == "none-configured" and ui_panel:
+                    if ui_panel["panel"] == "client" and client:
+                        red_n = sum(1 for f in client.risk_flags if f.severity == "red" and not f.resolved)
+                        amber_n = sum(1 for f in client.risk_flags if f.severity == "amber" and not f.resolved)
                         reply = (
-                            f"Opened **{c.case_id} — {c.full_name or c.pseudonym}** (`{c.visa_class}`) in the side panel.\n\n"
-                            f"- **Good Standing:** `{c.standing_score}%` ({c.denial_risk_level.upper()} risk — {red_n} Red, {amber_n} Amber)\n"
-                            f"- **Stage:** `{c.pipeline_stage.replace('_', ' ').title()}` | **DS-160:** `{c.ds160_confirmation_id or 'Pending'}`\n\n"
-                            f"Try saying *\"Generate follow-up questionnaire for {c.case_id}\"* or *\"Generate visual roadmap png for {c.case_id}\"*."
+                            f"Opened **{client.case_id} — {client.full_name or client.pseudonym}** (`{client.visa_class}`) in the side panel.\n\n"
+                            f"- **Good Standing:** `{client.standing_score}%` ({client.denial_risk_level.upper()} risk — {red_n} Red, {amber_n} Amber)\n"
+                            f"- **Stage:** `{client.pipeline_stage.replace('_', ' ').title()}` | **DS-160:** `{client.ds160_confirmation_id or 'Pending'}`\n\n"
+                            "*Connect an AI provider in Settings → AI Subscriptions & Setup for full conversational answers about this case.*"
+                        )
+                    elif ui_panel["panel"] == "ceo_analytics":
+                        total = db.query(ClientCase).count()
+                        approved = db.query(ClientCase).filter(ClientCase.outcome == "approved").count()
+                        refused = db.query(ClientCase).filter(ClientCase.outcome == "refused").count()
+                        reply = (
+                            f"Opened **CEO Executive Analytics & Graphs** in the side panel ({total} total cases: {approved} approved, {refused} refused)."
                         )
                     else:
-                        reply = f"Could not find `{target_cid}`. Opened the Client Pipeline."
-                        ui_panel = {"panel": "clients_list", "title": "Client Pipeline"}
-                elif ui_panel and ui_panel["panel"] == "settings":
-                    reply = "Opened **AI Subscriptions, Voice Engine & MCP Setup** in the side panel. Sign in with **ChatGPT Codex**, **Claude Pro/Max**, **Antigravity (Google OAuth)**, configure **Voice (Edge Neural / ElevenLabs / Fish Audio)**, or export your **MCP Config**."
-                elif ui_panel and ui_panel["panel"] == "official_pdfs":
-                    reply = "Opened the **Official Government PDF Viewer** (PICA Passport forms, U.S. Dept. of State DS-5535/DS-157/DS-156E, RGD BIRREQ). View inline, verify official URLs, or drag-and-drop new PDFs right into chat."
-                elif ui_panel and ui_panel["panel"] == "gov_sources":
-                    reply = "Opened **Official Scraped Government Sources** with clickable links to U.S. Embassy Kingston, travel.state.gov, AIS Jamaica, PICA, and RGD/NIRA."
-                elif ui_panel and ui_panel["panel"] == "database":
-                    reply = "Opened the **Live Database Explorer** in the side panel."
-                elif ui_panel and ui_panel["panel"] == "obsidian":
-                    reply = "Opened your local **Obsidian Vault** in the side panel."
-                elif ui_panel and ui_panel["panel"] == "team":
-                    reply = "Opened **Team & Staff Account Manager** in the side panel."
-                elif ui_panel and ui_panel["panel"] == "clients_list":
-                    reply = "Opened **Client Pipeline** (Active Clients separated cleanly from the 33 Historical Reference cases)."
-                else:
-                    client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first() if target_cid else None
-                    res = answer_customer_question(db, msg, client, conversation_id=conv_id, history=history)
-                    reply = res["reply"]
-                    citations = res.get("citations", [])
-                    provider = res["provider_used"]
+                        reply = f"Opened **{ui_panel.get('title', 'Workspace Panel')}** in the side panel.\n\n{reply}"
 
     meta_blob = {
         "tool_trace": tool_trace,

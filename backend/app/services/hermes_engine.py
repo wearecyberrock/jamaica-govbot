@@ -49,19 +49,21 @@ CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 CODEX_USER_AGENT = "codex_cli_rs/0.0.0 (Jahtaria Desktop)"
 
-COMPLIANCE_SYSTEM_PROMPT = """You are the Jahtaria Visa Intelligence AI Specialist for Jamaican applicants preparing for U.S. Visa interviews at the U.S. Embassy in Kingston (142 Old Hope Road, Kingston).
+COMPLIANCE_SYSTEM_PROMPT = """You are the Jahtaria Visa Intelligence AI Assistant — a friendly, smart, conversational assistant for a Jamaican U.S. Visa preparation agency (U.S. Embassy Kingston, 142 Old Hope Road, Kingston).
 
-CONVERSATIONAL BEHAVIOR:
-- Respond naturally, warmly, and directly to greetings, follow-ups, and general questions, using the full conversation history to remember context.
-- When the user asks about U.S. visas, Kingston Embassy rules, DS-160, PICA Jamaican passports, RGD civil documents, or client cases, ground your answer in the Verified Official Reference Knowledge and cite the relevant official URL(s).
-- Do not dump unsolicited boilerplate checklists when the user simply says hello or asks a general question.
+HOW TO COMMUNICATE (NATURAL & FLEXIBLE):
+- Understand casual language, spelling typos (e.g. "questionare", "senariors", "folloup", "CO33" meaning "C033"), short messages (like "?" or "show docs"), and any free-form prompt naturally.
+- Answer directly whatever the user asks! You can handle anything the user types:
+  - Case advice ("what should I do for C027?"), mock interview scenarios, possible consular questions, questionnaire drafts, document checklists, email/letter drafting, strategy, or general questions.
+  - If the user asks something completely unrelated to visas/travel/agency work, still give a brief, helpful, friendly answer and gently remind them of your main purpose (helping with Jahtaria U.S. visa cases, Kingston Embassy prep, documents, and client readiness).
+- Use the full conversation history so you NEVER repeat the same canned summary over and over. Always move the conversation forward based on what the user just asked.
+- When you have Active Client Case Context (risk flags, follow-up questions, predictions, profile details) or Official Reference Knowledge, actually use those specific details in your answer rather than giving generic advice.
 
-STRICT COMPLIANCE RULES (NON-NEGOTIABLE):
-1. Assist ONLY with truthful application verification, factual document readiness, and accurate, spontaneous interview answers.
-2. NEVER coach concealment, NEVER invent ties, NEVER advise omitting U.S. relatives or prior refusals, and NEVER guarantee visa approval.
-3. Clearly distinguish Gross vs. Net JMD monthly salary (DS-160 requires accurate monthly gross; net take-home is a normal distinction, not automatically false).
-4. Always cite official verified sources (jm.usembassy.gov, travel.state.gov, ais.usvisa-info.com/en-jm/niv, pica.gov.jm) when referencing fees, passport rules, the April 1, 2025 DS-160 AA-barcode matching rule, or the 92% RGD civil document photocopy rule.
-5. Keep answers practical, warm, clear, and concise."""
+ETHICAL COMPLIANCE GUARDRAILS (KEEP NATURAL, NOT STIFF OR PREACHY):
+1. Focus on truthful application verification, factual document readiness, and clear, honest interview preparation.
+2. Never advise lying, hiding U.S. relatives/prior refusals, inventing ties, or guaranteeing visa approval.
+3. Clarify Gross vs. Net JMD monthly salary when income comes up (DS-160 asks for monthly gross; net take-home is a normal difference).
+4. Cite official verified sources (jm.usembassy.gov, travel.state.gov, ais.usvisa-info.com/en-jm/niv, pica.gov.jm) when quoting fees, passport rules, the April 1, 2025 DS-160 AA-barcode rule, or the 92% RGD photocopy rule."""
 
 
 def find_antigravity_bin() -> str | None:
@@ -801,25 +803,61 @@ def _gather_gov_context(db: Session, query: str) -> tuple[list[GovSource], bool]
     return sources[:3], False
 
 
+def _build_client_context(db: Session, client: ClientCase | None, extra_context: str = "") -> str:
+    """Build rich live context for the LLM including client details, risk flags, questionnaire items, predictions & docs."""
+    blocks: list[str] = []
+    if client:
+        blocks.append(
+            f"Active Client Case Context:\n"
+            f"- Case ID: {client.case_id} | Name: {client.full_name or client.pseudonym} | Visa Class: {client.visa_class}\n"
+            f"- Stage: {client.pipeline_stage} | Good Standing: {client.standing_score}% | Denial Risk: {client.denial_risk_level} | Outcome: {client.outcome}\n"
+            f"- Occupation: {client.occupation or 'Not set'} | Employer: {client.employer_name or 'Not set'}\n"
+            f"- Monthly Gross JMD: {client.monthly_gross_jmd} | Monthly Net JMD: {client.monthly_net_jmd}\n"
+            f"- Destination: {client.us_destination or 'Not set'} | Purpose: {client.purpose_of_trip or 'Not set'}\n"
+            f"- Travel Dates: {client.intended_travel_date or 'Not set'} to {client.intended_return_date or 'Not set'}\n"
+            f"- Marital Status: {client.marital_status or 'Not set'} | Children: {client.children_count}\n"
+            f"- Prior U.S. Refusals: {client.prior_us_refusals} | Has U.S. Relatives: {client.has_us_relatives} ({client.us_relatives_details or 'none noted'})\n"
+            f"- DS-160 Confirmation: {client.ds160_confirmation_id or 'Pending'} | AIS Barcode: {client.ais_appointment_barcode or 'Pending'} | Passport Expiry: {client.passport_expiry or 'Pending'}"
+        )
+        if client.risk_flags:
+            flag_lines = []
+            for f in client.risk_flags[:12]:
+                st = "RESOLVED" if f.resolved else f.severity.upper()
+                fq = f" | Question: {f.follow_up_question}" if f.follow_up_question else ""
+                ans = f" | Answer: {f.client_response}" if f.client_response else ""
+                flag_lines.append(f"  - [{st}] {f.title}: {f.detail}{fq}{ans}")
+            blocks.append("Case Risk Flags & Follow-Up Questionnaire Items:\n" + "\n".join(flag_lines))
+        else:
+            blocks.append("Case Risk Flags & Follow-Up Questionnaire Items: None currently flagged (0 red, 0 amber).")
+
+        if client.predictions:
+            pred_lines = [
+                f"  - (#{p.rank}, {p.question_type}, {p.theme_id}): {p.question_text}"
+                for p in sorted(client.predictions, key=lambda x: x.rank)[:8]
+            ]
+            blocks.append("Saved Interview Question Predictions:\n" + "\n".join(pred_lines))
+
+        if client.assets:
+            asset_lines = [f"  - {a.title} ({a.filename}, status={a.approval_status})" for a in client.assets[:6]]
+            blocks.append("Generated Client Documents/Assets:\n" + "\n".join(asset_lines))
+
+    if extra_context:
+        blocks.append(extra_context)
+    return ("\n\n" + "\n\n".join(blocks)) if blocks else ""
+
+
 def answer_customer_question(
     db: Session,
     message: str,
     client: ClientCase | None = None,
     conversation_id: str | None = None,
     history: list[dict[str, str]] | None = None,
+    extra_context: str = "",
 ) -> dict[str, Any]:
     """Live AI Assistant grounded in verified U.S./Jamaica sources with full multi-turn memory and honest error reporting."""
     relevant_sources, had_match = _gather_gov_context(db, message)
     context_lines = [f"- [{s.name} ({s.agency})]({s.url}): {s.verified_summary}" for s in relevant_sources]
-
-    case_ctx = ""
-    if client:
-        case_ctx = (
-            f"\n\nActive Client Case Context:\n"
-            f"- Case ID: {client.case_id} ({client.full_name or client.pseudonym}), Visa Class: {client.visa_class}\n"
-            f"- Stage: {client.pipeline_stage}, Good Standing: {client.standing_score}%, "
-            f"DS-160: {client.ds160_confirmation_id or 'Pending'}, Passport Expiry: {client.passport_expiry or 'Pending'}."
-        )
+    case_ctx = _build_client_context(db, client, extra_context=extra_context)
 
     effective_history = (
         _normalize_history(history)
