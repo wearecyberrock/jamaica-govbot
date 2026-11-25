@@ -1032,6 +1032,11 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
                         >
                           <Volume2 className="w-3 h-3" /> Speak
                         </button>
+                        {t.provider_used && (
+                          <span className="text-[10px] font-mono text-slate-500 px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/5">
+                            {t.provider_used}
+                          </span>
+                        )}
                       </div>
                     )}
 
@@ -1314,26 +1319,40 @@ function PromptPill({
         />
 
         {/* Grouped Model Picker (Subscriptions / Local / API Keys) */}
-        <div className="hidden sm:flex items-center relative max-w-[148px] shrink-0">
-          <select
-            value={`${activeProvider}::${activeModel}`}
-            onChange={(e) => onSelectModel(e.target.value)}
-            className="appearance-none bg-transparent text-xs text-slate-300 hover:text-white pr-5 pl-1.5 py-1 outline-none cursor-pointer truncate max-w-[148px]"
-          >
-            {(modelCatalog?.groups || []).map((g: any) => (
-              <optgroup key={g.group} label={g.group} className="bg-[#111318] text-slate-400">
-                {g.items.map((item: any) =>
-                  item.models.slice(0, 2).map((m: string) => (
-                    <option key={`${item.provider}::${m}`} value={`${item.provider}::${m}`} className="bg-[#171a21] text-slate-100">
-                      {item.connected ? "● " : "○ "}
-                      {item.label.split(" ")[0]} · {m}
-                    </option>
-                  ))
-                )}
-              </optgroup>
-            ))}
-            {!modelCatalog && <option value="auto::consular-auto">● Consular Auto</option>}
-          </select>
+        <div className="hidden sm:flex items-center relative max-w-[175px] shrink-0">
+          {(() => {
+            const flatItems = (modelCatalog?.groups || []).flatMap((g: any) => g.items || []);
+            const provItem = flatItems.find((i: any) => i.provider === activeProvider);
+            const effectiveModel =
+              provItem && Array.isArray(provItem.models) && provItem.models.length > 0
+                ? provItem.models.includes(activeModel)
+                  ? activeModel
+                  : provItem.models[0]
+                : activeModel;
+            const selectVal = `${activeProvider}::${effectiveModel}`;
+            return (
+              <select
+                value={selectVal}
+                onChange={(e) => onSelectModel(e.target.value)}
+                className="appearance-none bg-transparent text-xs text-slate-300 hover:text-white pr-5 pl-1.5 py-1 outline-none cursor-pointer truncate max-w-[175px]"
+                title={`Active AI: ${activeProvider} / ${effectiveModel}`}
+              >
+                {(modelCatalog?.groups || []).map((g: any) => (
+                  <optgroup key={g.group} label={g.group} className="bg-[#111318] text-slate-400">
+                    {g.items.map((item: any) =>
+                      item.models.map((m: string) => (
+                        <option key={`${item.provider}::${m}`} value={`${item.provider}::${m}`} className="bg-[#171a21] text-slate-100">
+                          {item.connected ? "● " : "○ "}
+                          {item.label.split(" ")[0]} · {m}
+                        </option>
+                      ))
+                    )}
+                  </optgroup>
+                ))}
+                {!modelCatalog && <option value="auto::consular-auto">● Consular Auto</option>}
+              </select>
+            );
+          })()}
           <ChevronDown className="w-3.5 h-3.5 text-slate-500 pointer-events-none -ml-4 shrink-0" />
         </div>
 

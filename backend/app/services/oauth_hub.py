@@ -496,6 +496,15 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
         },
     ]
 
+    # Guarantee active_model always matches an actual model for active_provider (prevents HTML <select> showing first option!)
+    all_items = [it for grp in groups for it in grp["items"]]
+    active_item = next((it for it in all_items if it["provider"] == active_provider), None)
+    if active_item and active_item.get("models"):
+        if not active_model or active_model not in active_item["models"]:
+            active_model = active_item["models"][0]
+    elif not active_model:
+        active_model = "consular-auto"
+
     return {
         "active_provider": active_provider,
         "active_model": active_model,
