@@ -38,11 +38,19 @@ from app.services.hermes_engine import (
     load_conversation_history,
     run_staff_agent_loop,
 )
+from app.services.file_synthesizer import (
+    _extract_text_from_bytes,
+    _parse_structured_clients,
+    synthesize_clients_from_text,
+    synthesize_zip_archive,
+)
 from app.services.obsidian import sync_client_to_obsidian
 from app.services.risk_engine import evaluate_client_standing
 from app.services.smart_paste import (
     build_dynamic_data_table,
     detect_and_apply_smart_paste,
+    detect_chat_delete_or_reset,
+    detect_chat_gmail_command,
     detect_natural_client_crud,
 )
 
@@ -464,8 +472,11 @@ def confirm_pending_action(
         db.commit()
         evaluate_client_standing(db, c)
         sync_client_to_obsidian(c, c.risk_flags, c.journal_entries)
-    elif act.action_type == "bulk_create_clients":
+    elif act.action_type in ("bulk_create_clients", "bulk_create_clients_with_files"):
+        import shutil as _shutil
+
         created_ids = []
+        created_doc_ids = []
         for item in after.get("clients") or []:
             count = db.query(ClientCase).count()
             cid = f"C{count + 1:03d}"
@@ -486,14 +497,74 @@ def confirm_pending_action(
                 employer_name=str(item.get("employer_name") or ""),
                 us_destination=str(item.get("us_destination") or ""),
                 purpose_of_trip=str(item.get("purpose_of_trip") or ""),
+                passport_expiry=str(item.get("passport_expiry") or ""),
+                embassy_interview_date=str(item.get("embassy_interview_date") or ""),
+                ds160_confirmation_id=str(item.get("ds160_confirmation_id") or ""),
+                monthly_gross_jmd=item.get("monthly_gross_jmd"),
+                monthly_net_jmd=item.get("monthly_net_jmd"),
                 pipeline_stage="data_synced",
                 assigned_staff=user.full_name,
             )
+            if item.get("passport_number"):
+                c.passport_number_enc = encrypt_value(str(item["passport_number"]))
+            if item.get("dob"):
+                c.dob_enc = encrypt_value(str(item["dob"]))
             db.add(c)
             db.flush()
+            evaluate_client_standing(db, c)
             created_ids.append(cid)
-        act.before_json = json.dumps({"created_case_ids": created_ids})
+
+            # Attach any ZIP-matched files directly into the newly synthesized client's Vault!
+            for mf in item.get("_matched_files") or []:
+                sp = Path(mf.get("staged_path", ""))
+                if sp.exists() and sp.is_file():
+                    dest_dir = CLIENT_VAULT_DIR / cid
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest = dest_dir / sp.name
+                    _shutil.copy2(sp, dest)
+                    ext_f = dest.suffix.lower()
+                    mime_f = "application/pdf" if ext_f == ".pdf" else ("image/png" if ext_f in (".png", ".jpg", ".jpeg", ".webp") else "application/octet-stream")
+                    vdoc = ClientDocument(
+                        case_id=cid,
+                        category="photos_other",
+                        title=mf.get("filename") or dest.stem,
+                        filename=mf.get("filename") or dest.name,
+                        file_path=str(dest),
+                        mime_type=mime_f,
+                        size_bytes=dest.stat().st_size,
+                        sha256=sha256_file(dest),
+                        page_count=get_pdf_page_count(dest),
+                        uploaded_by=f"ZIP Synthesizer ({user.full_name})",
+                    )
+                    db.add(vdoc)
+                    db.flush()
+                    created_doc_ids.append(vdoc.id)
+        act.before_json = json.dumps({"created_case_ids": created_ids, "created_doc_ids": created_doc_ids})
         db.commit()
+    elif act.action_type == "delete_client":
+        c = db.query(ClientCase).filter(ClientCase.case_id == act.target_ref).first()
+        if c:
+            db.delete(c)
+            db.commit()
+    elif act.action_type == "bulk_delete_clients":
+        for cid in after.get("case_ids") or []:
+            c = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
+            if c:
+                db.delete(c)
+        db.commit()
+    elif act.action_type == "wipe_all_clients":
+        if user.role != "ceo" and not bool(getattr(user, "all_tiers", False)):
+            raise HTTPException(status_code=403, detail="Only CEO can wipe all client data.")
+        for c in db.query(ClientCase).all():
+            db.delete(c)
+        db.query(ClientDocument).delete()
+        db.commit()
+    elif act.action_type == "reset_seed_data":
+        if user.role != "ceo" and not bool(getattr(user, "all_tiers", False)):
+            raise HTTPException(status_code=403, detail="Only CEO can restore pristine seed data.")
+        from app.seed import reset_seed_clients_to_pristine
+
+        reset_seed_clients_to_pristine(db)
 
     act.status = "applied"
     act.applied_at = datetime.now(timezone.utc)
@@ -535,11 +606,31 @@ def undo_applied_action(
         c = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
         if c:
             db.delete(c)
-    elif act.action_type == "bulk_create_clients":
+    elif act.action_type in ("bulk_create_clients", "bulk_create_clients_with_files"):
         for cid in before.get("created_case_ids") or []:
             c = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
             if c:
                 db.delete(c)
+        for did in before.get("created_doc_ids") or []:
+            d = db.query(ClientDocument).filter(ClientDocument.id == did).first()
+            if d:
+                db.delete(d)
+    elif act.action_type == "delete_client":
+        snap = before.get("client")
+        if isinstance(snap, dict) and snap.get("case_id"):
+            if not db.query(ClientCase).filter(ClientCase.case_id == snap["case_id"]).first():
+                restored = ClientCase(**{k: v for k, v in snap.items() if hasattr(ClientCase, k)})
+                db.add(restored)
+                db.flush()
+                evaluate_client_standing(db, restored)
+    elif act.action_type in ("bulk_delete_clients", "wipe_all_clients"):
+        for snap in before.get("clients") or []:
+            if isinstance(snap, dict) and snap.get("case_id"):
+                if not db.query(ClientCase).filter(ClientCase.case_id == snap["case_id"]).first():
+                    restored = ClientCase(**{k: v for k, v in snap.items() if hasattr(ClientCase, k)})
+                    db.add(restored)
+                    db.flush()
+                    evaluate_client_standing(db, restored)
     elif act.action_type == "update_setting":
         for k, v in before.items():
             is_sec = any(x in k.lower() for x in ("key", "token", "secret"))
@@ -817,43 +908,47 @@ async def upload_file_in_chat(
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file.filename).name)
     raw_bytes = await file.read()
 
-    # 1. CSV / Excel customer data file -> propose bulk import via Confirm card!
-    if ext in (".csv", ".xlsx"):
-        import csv as _csv
-        import io as _io
+    # 0. ZIP Archive -> unpack, synthesize ALL clients + stage matched files for Vault attachment!
+    if ext == ".zip":
+        syn = synthesize_zip_archive(db, raw_bytes, safe_name)
+        clients_found = syn.get("clients") or []
+        if clients_found:
+            names_preview = ", ".join(c["full_name"] for c in clients_found[:5])
+            if len(clients_found) > 5:
+                names_preview += f" (+{len(clients_found) - 5} more)"
+            matched_doc_total = sum(len(c.get("_matched_files") or []) for c in clients_found)
+            pa = PendingAction(
+                user_id=user.id,
+                action_type="bulk_create_clients_with_files",
+                target_ref="clients",
+                summary=f"Synthesize {len(clients_found)} client(s) & {matched_doc_total} matched vault doc(s) from ZIP '{safe_name}': {names_preview}",
+                before_json=json.dumps({}),
+                after_json=json.dumps({"clients": clients_found, "batch_id": syn["batch_id"]}),
+                status="pending",
+            )
+            db.add(pa)
+            db.commit()
+            db.refresh(pa)
+            return {
+                "kind": "spreadsheet_import",
+                "title": safe_name,
+                "filename": safe_name,
+                "row_count": len(clients_found),
+                "pending_action": _serialize_action(pa),
+                "panel": {"panel": "spreadsheet", "title": "Client Spreadsheet"},
+                "summary": (
+                    f"Unpacked **`{safe_name}`** ({syn['files_scanned']} file(s) scanned) and synthesized **{len(clients_found)} new client(s)** "
+                    f"(`{names_preview}`) with **{matched_doc_total}** matched Vault document(s). Click **Confirm & Apply** to import all (with 1-click Undo)."
+                ),
+            }
+        raise HTTPException(
+            status_code=400,
+            detail=f"Scanned {syn['files_scanned']} file(s) inside '{safe_name}', but found no recognizable client names or records.",
+        )
 
-        if ext == ".xlsx":
-            import openpyxl
-
-            wb = openpyxl.load_workbook(_io.BytesIO(raw_bytes), read_only=True, data_only=True)
-            ws = wb.active
-            buf = _io.StringIO()
-            w = _csv.writer(buf)
-            for r in ws.iter_rows(values_only=True):
-                w.writerow(["" if v is None else str(v) for v in r])
-            csv_text = buf.getvalue()
-        else:
-            csv_text = raw_bytes.decode("utf-8", errors="replace")
-
-        reader = _csv.DictReader(_io.StringIO(csv_text))
-        parsed_rows = []
-        for row in reader:
-            norm = {k.strip().lower().replace(" ", "_"): (v or "").strip() for k, v in row.items() if k}
-            nm = norm.get("full_name") or norm.get("name") or norm.get("client_name")
-            if nm:
-                parsed_rows.append(
-                    {
-                        "full_name": nm,
-                        "email": norm.get("email", ""),
-                        "phone": norm.get("phone", ""),
-                        "parish": norm.get("parish", "Kingston & St. Andrew"),
-                        "visa_class": norm.get("visa_class", "B1/B2") or "B1/B2",
-                        "occupation": norm.get("occupation", ""),
-                        "employer_name": norm.get("employer") or norm.get("employer_name", ""),
-                        "us_destination": norm.get("us_destination") or norm.get("destination", ""),
-                        "purpose_of_trip": norm.get("purpose_of_trip") or norm.get("purpose", ""),
-                    }
-                )
+    # 1. CSV / Excel / JSON customer data file -> propose bulk import via Confirm card!
+    if ext in (".csv", ".xlsx", ".json"):
+        parsed_rows = _parse_structured_clients(safe_name, raw_bytes)
         if parsed_rows:
             pa = PendingAction(
                 user_id=user.id,
@@ -876,6 +971,42 @@ async def upload_file_in_chat(
                 "panel": {"panel": "spreadsheet", "title": "Client Spreadsheet"},
                 "summary": f"Detected **{len(parsed_rows)} customer record(s)** in `{safe_name}`. Click **Confirm & Apply** to add them to your Client Spreadsheet.",
             }
+
+    # 1b. TXT / MD or multi-client DOCX / PDF (when no single case is targeted) -> AI Client Synthesizer!
+    cid_hint = case_id.strip().upper() if case_id and case_id.strip() else None
+    if ext in (".txt", ".md") or (not cid_hint and ext in (".docx", ".pdf")):
+        extracted_txt = _extract_text_from_bytes(safe_name, raw_bytes)
+        if extracted_txt.strip():
+            syn_clients = synthesize_clients_from_text(db, extracted_txt, source_label=safe_name)
+            # Trigger bulk synthesis if it's a TXT/MD with 1+ clients, or a DOCX/PDF with 2+ clients (so single-client PDFs still go to Vault!)
+            if (ext in (".txt", ".md") and len(syn_clients) >= 1) or len(syn_clients) >= 2:
+                names_preview = ", ".join(c["full_name"] for c in syn_clients[:5])
+                if len(syn_clients) > 5:
+                    names_preview += f" (+{len(syn_clients) - 5} more)"
+                pa = PendingAction(
+                    user_id=user.id,
+                    action_type="bulk_create_clients",
+                    target_ref="clients",
+                    summary=f"Synthesize {len(syn_clients)} new client(s) from '{safe_name}': {names_preview}",
+                    before_json=json.dumps({}),
+                    after_json=json.dumps({"clients": syn_clients}),
+                    status="pending",
+                )
+                db.add(pa)
+                db.commit()
+                db.refresh(pa)
+                return {
+                    "kind": "spreadsheet_import",
+                    "title": safe_name,
+                    "filename": safe_name,
+                    "row_count": len(syn_clients),
+                    "pending_action": _serialize_action(pa),
+                    "panel": {"panel": "spreadsheet", "title": "Client Spreadsheet"},
+                    "summary": (
+                        f"AI synthesized **{len(syn_clients)} new client profile(s)** from `{safe_name}` (`{names_preview}`). "
+                        "Click **Confirm & Apply** below to create them all (with full Undo)."
+                    ),
+                }
 
     # 2. Client Document / Image / PDF / DOCX -> store in Client Vault + run AI Vision/OCR scan!
     cid = case_id.strip().upper() if case_id and case_id.strip() else None
@@ -1060,8 +1191,9 @@ def unified_agent_command(
     else:
         target_cid = _detect_case_id(db, msg, req.case_id)
 
-        # 0. Smart Paste Auto-Setup FIRST (API keys, MCP URLs/JSON, ClawLink, Composio, pasted CSV!)
+        # 0. Smart Paste Auto-Setup FIRST (API keys, MCP URLs/JSON, ClawLink, Composio, pasted CSV, Gov URLs!)
         smart = detect_and_apply_smart_paste(db, user, msg)
+        gmail_cmd = None if smart else detect_chat_gmail_command(db, user, msg, target_cid)
         if smart:
             # Redact pasted secret keys from saved chat history!
             if smart.get("redacted_message"):
@@ -1072,15 +1204,29 @@ def unified_agent_command(
             ui_panel = smart.get("ui_panel")
             reply = smart["reply"]
             provider = "smart-paste-engine"
+        elif gmail_cmd:
+            ui_panel = gmail_cmd.get("ui_panel")
+            reply = gmail_cmd["reply"]
+            provider = "gmail-automation"
         else:
-            # 1. Check CEO / Staff Conversational Edit / Natural-Language Client Creation (Preview/Confirm + Undo!)
-            proposed = _detect_ceo_conversational_edit(db, user, msg, target_cid) or detect_natural_client_crud(db, user, msg, target_cid)
+            # 1. Check Safe Chat Delete / Wipe OR CEO/Staff Conversational Edit / Client Creation (Preview/Confirm + Undo!)
+            proposed = (
+                detect_chat_delete_or_reset(db, user, msg, target_cid)
+                or _detect_ceo_conversational_edit(db, user, msg, target_cid)
+                or detect_natural_client_crud(db, user, msg, target_cid)
+            )
             if proposed:
                 pending_action_payload = _serialize_action(proposed)
-                reply = f"I prepared this change for your review:\n\n**{proposed.summary}**\n\nClick **Confirm & Apply** below to execute (with full Undo & audit logging)."
+                is_del = proposed.action_type in ("delete_client", "bulk_delete_clients", "wipe_all_clients", "reset_seed_data")
+                reply = (
+                    f"⚠️ **Please confirm this destructive action:**\n\n**{proposed.summary}**\n\n"
+                    "Nothing has been deleted yet. Click **Confirm & Apply** below to proceed (a full snapshot is saved for **1-click Undo**)."
+                    if is_del
+                    else f"I prepared this change for your review:\n\n**{proposed.summary}**\n\nClick **Confirm & Apply** below to execute (with full Undo & audit logging)."
+                )
                 if proposed.action_type == "update_client" and target_cid:
                     ui_panel = {"panel": "client", "case_id": target_cid, "subview": "intake", "title": f"Case {target_cid}"}
-                elif proposed.action_type == "create_client":
+                elif proposed.action_type in ("create_client", "delete_client", "bulk_delete_clients", "wipe_all_clients", "reset_seed_data"):
                     ui_panel = {"panel": "spreadsheet", "title": "Client Spreadsheet"}
                 elif proposed.action_type == "update_branding":
                     ui_panel = {"panel": "settings", "title": "Settings & Branding"}
@@ -1116,7 +1262,9 @@ def unified_agent_command(
                 )
 
                 # Decide which companion side panel (if any) to open alongside the AI reply
-                if any(k in low for k in ("spreadsheet", "excel", "sort client", "sort case", "sort by", "client table")):
+                if any(k in low for k in ("gmail", "email automation", "email rule", "email queue", "inbox sync", "cron job", "hermes cron")):
+                    ui_panel = {"panel": "gmail", "title": "Gmail Automation & Cron"}
+                elif any(k in low for k in ("spreadsheet", "excel", "sort client", "sort case", "sort by", "client table")):
                     ui_panel = {"panel": "spreadsheet", "title": "Client Spreadsheet & Vault"}
                 elif role == "ceo" and any(k in low for k in ("ceo", "analytics", "graph", "chart", "kpi", "revenue", "approval rate", "recall", "metrics", "overview", "executive")):
                     ui_panel = {"panel": "ceo_analytics", "title": "CEO Executive Analytics & Graphs"}

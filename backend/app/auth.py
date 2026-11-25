@@ -41,8 +41,10 @@ def create_access_token(user: User) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user.id),
+        "username": user.username or user.email.split("@")[0],
         "email": user.email,
         "role": user.role,
+        "all_tiers": bool(getattr(user, "all_tiers", False)),
         "full_name": user.full_name,
         "linked_case_id": user.linked_case_id,
         "iat": int(now.timestamp()),
@@ -86,7 +88,7 @@ def get_current_user(
 
 def require_roles(*allowed_roles: str) -> Callable:
     def _checker(user: User = Depends(get_current_user)) -> User:
-        if user.role not in allowed_roles:
+        if user.role not in allowed_roles and not bool(getattr(user, "all_tiers", False)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access restricted to roles: {', '.join(allowed_roles)}.",

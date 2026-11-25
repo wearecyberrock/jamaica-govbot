@@ -43,12 +43,14 @@ import type {
   VaultNoteMeta,
 } from "@/lib/types";
 import { ClientSpreadsheetView } from "./ClientSpreadsheetView";
+import { GmailAutomationPanel } from "./GmailAutomationPanel";
 
 export interface PanelRequest {
   panel:
     | "ceo_analytics"
     | "clients_list"
     | "spreadsheet"
+    | "gmail"
     | "client"
     | "customer_case"
     | "official_pdfs"
@@ -184,6 +186,15 @@ export function RightSidePanel({
               onNavigatePanel({ panel: "client", case_id: cid, subview: "overview", title: `Case ${cid}` });
             }}
             onOpenStudio={(t) => onOpenStudio?.(t)}
+          />
+        )}
+        {request.panel === "gmail" && isStaffOrCeo && (
+          <GmailAutomationPanel
+            refreshNonce={refreshNonce}
+            onOpenCase={(cid) => {
+              onSelectCaseForChat(cid);
+              onNavigatePanel({ panel: "client", case_id: cid, subview: "overview", title: `Case ${cid}` });
+            }}
           />
         )}
         {(request.panel === "client" || request.panel === "customer_case") && (
@@ -1679,14 +1690,19 @@ function ObsidianSubPanel({ initialPath }: { initialPath: string }) {
   );
 }
 
-/* ── 8. CEO TEAM & STAFF ACCOUNT MANAGER ───────────────────────────────────── */
+/* ── 8. CEO TEAM & STAFF ACCOUNT MANAGER (Username + Reset Password!) ──────── */
 function TeamSubPanel() {
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [recoveryPin, setRecoveryPin] = useState("");
   const [role, setRole] = useState<"staff" | "customer">("staff");
   const [msg, setMsg] = useState("");
+  const [resetTargetId, setResetTargetId] = useState<number | null>(null);
+  const [resetNewPw, setResetNewPw] = useState("");
+  const [resetNewPin, setResetNewPin] = useState("");
 
   const load = () => {
     apiFetch<UserAccount[]>("/api/auth/users").then(setUsers).catch(() => {});
@@ -1698,20 +1714,38 @@ function TeamSubPanel() {
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          await apiFetch("/api/auth/users", { method: "POST", body: JSON.stringify({ full_name: fullName, email, password, role }) });
+          await apiFetch("/api/auth/users", {
+            method: "POST",
+            body: JSON.stringify({
+              full_name: fullName,
+              username,
+              email,
+              password,
+              recovery_pin: recoveryPin,
+              role,
+            }),
+          });
           setFullName("");
+          setUsername("");
           setEmail("");
           setPassword("");
+          setRecoveryPin("");
           setMsg(`Created ${role} account.`);
           load();
         }}
         className="g-card p-3.5 space-y-2.5"
       >
-        <div className="text-xs font-semibold text-white">Create Staff or Client Account (1 CEO Only)</div>
-        <input className="g-input text-xs" required placeholder="Full Name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
-        <input className="g-input text-xs" required type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <div className="text-xs font-semibold text-white">Create Staff or Client Account (Username Login)</div>
         <div className="grid grid-cols-2 gap-2">
-          <input className="g-input text-xs" required type="password" minLength={6} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <input className="g-input text-xs" required placeholder="Full Name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+          <input className="g-input text-xs" required placeholder="Username (e.g. keisha_staff)" value={username} onChange={(e) => setUsername(e.target.value)} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <input className="g-input text-xs" required type="password" minLength={6} placeholder="Password (min 6)" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <input className="g-input text-xs" placeholder="Recovery PIN (4+ digits)" value={recoveryPin} onChange={(e) => setRecoveryPin(e.target.value)} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <input className="g-input text-xs" type="email" placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
           <select className="g-input text-xs" value={role} onChange={(e) => setRole(e.target.value as "staff" | "customer")}>
             <option value="staff">Staff Specialist</option>
             <option value="customer">Client Account</option>
@@ -1723,27 +1757,76 @@ function TeamSubPanel() {
 
       <div className="space-y-2">
         {users.map((u) => (
-          <div key={u.id} className="g-card p-3 flex items-center justify-between gap-2 text-xs">
-            <div className="min-w-0">
-              <div className="font-semibold text-white truncate">{u.full_name}</div>
-              <div className="text-[11px] text-slate-400 truncate">{u.email}</div>
+          <div key={u.id} className="g-card p-3 space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-semibold text-white truncate">
+                  {u.full_name}{" "}
+                  <span className="text-[11px] font-mono text-emerald-300">@{u.username || u.email.split("@")[0]}</span>
+                </div>
+                <div className="text-[11px] text-slate-400 truncate">
+                  {u.email} {u.all_tiers ? "• ALL TIERS" : ""}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="px-2 py-0.5 rounded bg-white/10 text-[10px] uppercase font-semibold text-amber-300">
+                  {u.role}
+                </span>
+                <button
+                  onClick={() => {
+                    setResetTargetId(resetTargetId === u.id ? null : u.id);
+                    setResetNewPw("");
+                    setResetNewPin("");
+                  }}
+                  className="px-2 py-1 rounded bg-white/5 hover:bg-white/15 text-[10px] text-slate-200"
+                  title="Reset user password or PIN"
+                >
+                  Reset PW
+                </button>
+                {u.role !== "ceo" && (
+                  <button
+                    onClick={async () => {
+                      await apiFetch(`/api/auth/users/${u.id}`, { method: "DELETE" });
+                      load();
+                    }}
+                    className="p-1 text-red-400 hover:bg-red-500/15 rounded"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="px-2 py-0.5 rounded bg-white/10 text-[10px] uppercase font-semibold text-amber-300">
-                {u.role}
-              </span>
-              {u.role !== "ceo" && (
+            {resetTargetId === u.id && (
+              <div className="pt-2 border-t border-white/10 flex flex-wrap gap-2">
+                <input
+                  className="g-input text-xs flex-1 min-w-[120px]"
+                  type="password"
+                  placeholder="New password (min 6)"
+                  value={resetNewPw}
+                  onChange={(e) => setResetNewPw(e.target.value)}
+                />
+                <input
+                  className="g-input text-xs w-28"
+                  placeholder="New PIN (opt)"
+                  value={resetNewPin}
+                  onChange={(e) => setResetNewPin(e.target.value)}
+                />
                 <button
                   onClick={async () => {
-                    await apiFetch(`/api/auth/users/${u.id}`, { method: "DELETE" });
-                    load();
+                    if (resetNewPw.length < 6) return;
+                    await apiFetch(`/api/auth/users/${u.id}/reset-password`, {
+                      method: "POST",
+                      body: JSON.stringify({ new_password: resetNewPw, new_recovery_pin: resetNewPin }),
+                    });
+                    setMsg(`Reset password for @${u.username || u.email}.`);
+                    setResetTargetId(null);
                   }}
-                  className="p-1 text-red-400 hover:bg-red-500/15 rounded"
+                  className="g-btn-primary px-3 py-1 text-[11px]"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  Save
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

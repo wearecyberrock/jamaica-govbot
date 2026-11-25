@@ -32,8 +32,11 @@ import {
   RotateCcw,
   FileSpreadsheet,
   Maximize2,
+  Mail,
+  KeyRound,
+  X,
 } from "lucide-react";
-import { apiFetch, clearAuthSession, getStoredToken, getStoredUser } from "@/lib/api";
+import { apiFetch, clearAuthSession, getStoredToken, getStoredUser, setAuthSession } from "@/lib/api";
 import type {
   BrandingConfig,
   ChatDataTablePayload,
@@ -183,20 +186,29 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
       .catch(() => {});
   };
 
+  // Account Security (Change Password / Username / Recovery PIN) modal state
+  const [showSecurityModal, setShowSecurityModal] = useState(false);
+  const [secCurPw, setSecCurPw] = useState("");
+  const [secNewPw, setSecNewPw] = useState("");
+  const [secNewUser, setSecNewUser] = useState("");
+  const [secPin, setSecPin] = useState("");
+  const [secMsg, setSecMsg] = useState("");
+  const [secErr, setSecErr] = useState("");
+
   useEffect(() => {
     const u = getStoredUser<UserAccount>();
     if (!u) {
       router.replace("/login");
       return;
     }
-    if (requiredRole && u.role !== requiredRole && !(u.role === "ceo" && requiredRole === "staff")) {
+    if (requiredRole && !u.all_tiers && u.role !== requiredRole && !(u.role === "ceo" && requiredRole === "staff")) {
       if (u.role === "ceo") router.replace("/ceo");
       else if (u.role === "staff") router.replace("/staff");
       else router.replace("/portal");
       return;
     }
     setUser(u);
-    if (u.role === "customer" && u.linked_case_id) {
+    if ((u.role === "customer" || (u.all_tiers && requiredRole === "customer")) && u.linked_case_id) {
       setActiveCaseId(u.linked_case_id);
       setVoicePersona("officer_us");
     }
@@ -456,8 +468,10 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
 
   if (!user) return null;
 
-  const isCeo = user.role === "ceo";
-  const isStaffOrCeo = user.role === "ceo" || user.role === "staff";
+  const effectiveRole: "ceo" | "staff" | "customer" =
+    user.all_tiers && requiredRole ? requiredRole : user.role;
+  const isCeo = effectiveRole === "ceo";
+  const isStaffOrCeo = effectiveRole === "ceo" || effectiveRole === "staff";
   const agencyName = branding?.agency_name || "Jahtaria Travel Services";
 
   const starterPrompts = isCeo
@@ -501,7 +515,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.docx,.png,.jpg,.jpeg,.webp,.csv,.xlsx"
+        accept=".zip,.txt,.md,.json,.pdf,.docx,.png,.jpg,.jpeg,.webp,.csv,.xlsx"
         className="hidden"
         onChange={(e) => {
           if (e.target.files?.length) handleFileUpload(e.target.files);
@@ -563,6 +577,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             <>
               <SidebarBtn icon={Users} label="Clients" open={sidebarOpen} active={rightPanel?.panel === "clients_list"} onClick={() => openPanel({ panel: "clients_list", title: "Client Pipeline" })} />
               <SidebarBtn icon={FileSpreadsheet} label="Spreadsheet" open={sidebarOpen} active={rightPanel?.panel === "spreadsheet"} onClick={() => openPanel({ panel: "spreadsheet", title: "Client Spreadsheet & Vault" })} />
+              <SidebarBtn icon={Mail} label="Gmail & Cron" open={sidebarOpen} active={rightPanel?.panel === "gmail"} onClick={() => openPanel({ panel: "gmail", title: "Gmail Automation & Cron" })} />
               <SidebarBtn icon={FileText} label="Official PDFs" open={sidebarOpen} active={rightPanel?.panel === "official_pdfs"} onClick={() => openPanel({ panel: "official_pdfs", title: "Official Government PDF Viewer" })} />
               <SidebarBtn icon={Globe} label="Gov Sources" open={sidebarOpen} active={rightPanel?.panel === "gov_sources"} onClick={() => openPanel({ panel: "gov_sources", title: "Official Scraped Gov Sources" })} />
               <SidebarBtn icon={Database} label="Database" open={sidebarOpen} active={rightPanel?.panel === "database"} onClick={() => openPanel({ panel: "database", table: "clients", title: "Database Explorer" })} />
@@ -645,16 +660,35 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           {isStaffOrCeo && (
             <SidebarBtn icon={Settings} label="AI, Voice & Setup" open={sidebarOpen} active={rightPanel?.panel === "settings"} onClick={() => openPanel({ panel: "settings", title: "AI Subscriptions, Voice & Setup" })} />
           )}
-          <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-white/[0.03]">
+          <div className="flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-white/[0.03]">
             {sidebarOpen && (
               <div className="min-w-0">
                 <div className="text-xs font-semibold text-slate-200 truncate">{user.full_name}</div>
-                <div className="text-[10px] uppercase text-amber-300 font-semibold">{user.role}</div>
+                <div className="text-[10px] text-[#e5b84b] font-semibold truncate">
+                  @{user.username || user.email.split("@")[0]} • {effectiveRole.toUpperCase()}
+                </div>
               </div>
             )}
-            <button onClick={handleLogout} className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 mx-auto" title="Sign Out">
-              <LogOut className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                onClick={() => {
+                  setSecCurPw("");
+                  setSecNewPw("");
+                  setSecNewUser(user.username || "");
+                  setSecPin("");
+                  setSecMsg("");
+                  setSecErr("");
+                  setShowSecurityModal(true);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-[#e5b84b] hover:bg-white/10"
+                title="Change Password, Username or Recovery PIN"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={handleLogout} className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10" title="Sign Out">
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -715,6 +749,30 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
               <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/25 font-mono text-[11px] shrink-0">
                 {activeCaseId}
               </span>
+            )}
+            {user.all_tiers && (
+              <div className="hidden lg:flex items-center gap-0.5 bg-white/[0.05] border border-[#e5b84b]/25 rounded-lg p-0.5 ml-1">
+                {(
+                  [
+                    ["ceo", "/ceo", "CEO"],
+                    ["staff", "/staff", "Staff"],
+                    ["customer", "/portal", "Client"],
+                  ] as const
+                ).map(([r, href, lbl]) => (
+                  <button
+                    key={r}
+                    onClick={() => router.push(href)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                      effectiveRole === r
+                        ? "bg-emerald-600 text-white"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                    title={`Switch testaccount to ${lbl} Tier`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
@@ -1152,7 +1210,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           </div>
           <RightSidePanel
             request={rightPanel}
-            user={user}
+            user={{ ...user, role: effectiveRole }}
             branding={branding}
             recentLinks={recentPanels}
             refreshNonce={panelRefreshNonce}
@@ -1184,6 +1242,103 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             }}
           />
         </>
+      )}
+
+      {/* Account Security Modal (Change Password, Username & Offline Recovery PIN) */}
+      {showSecurityModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md g-card p-5 space-y-3.5 border-[#e5b84b]/30">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-white flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-[#e5b84b]" /> Account Security &amp; Password
+              </div>
+              <button onClick={() => setShowSecurityModal(false)} className="p-1 text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setSecErr("");
+                setSecMsg("");
+                try {
+                  const res = await apiFetch<{ updated: boolean; access_token: string; user: UserAccount }>(
+                    "/api/auth/change-password",
+                    {
+                      method: "POST",
+                      body: JSON.stringify({
+                        current_password: secCurPw,
+                        new_password: secNewPw,
+                        new_username: secNewUser,
+                        recovery_pin: secPin,
+                      }),
+                    }
+                  );
+                  setAuthSession(res.access_token, res.user);
+                  setUser(res.user);
+                  setSecCurPw("");
+                  setSecNewPw("");
+                  setSecPin("");
+                  setSecMsg("Account security updated successfully!");
+                } catch (err: unknown) {
+                  setSecErr(err instanceof Error ? err.message : "Update failed");
+                }
+              }}
+              className="space-y-3 text-xs"
+            >
+              <div>
+                <label className="block text-slate-300 mb-1">Current Password *</label>
+                <input
+                  className="g-input"
+                  type="password"
+                  required
+                  value={secCurPw}
+                  onChange={(e) => setSecCurPw(e.target.value)}
+                  placeholder="Enter current password"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 mb-1">Username</label>
+                <input
+                  className="g-input"
+                  value={secNewUser}
+                  onChange={(e) => setSecNewUser(e.target.value)}
+                  placeholder="Keep or change username"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 mb-1">New Password (leave blank to keep)</label>
+                <input
+                  className="g-input"
+                  type="password"
+                  minLength={6}
+                  value={secNewPw}
+                  onChange={(e) => setSecNewPw(e.target.value)}
+                  placeholder="Min 6 characters"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 mb-1">Recovery PIN (for offline Forgot Password)</label>
+                <input
+                  className="g-input"
+                  value={secPin}
+                  onChange={(e) => setSecPin(e.target.value)}
+                  placeholder="4–8 digits (leave blank to keep)"
+                />
+              </div>
+              {secErr && <div className="p-2 rounded bg-red-500/15 text-red-200">{secErr}</div>}
+              {secMsg && <div className="p-2 rounded bg-emerald-500/15 text-emerald-200">{secMsg}</div>}
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={() => setShowSecurityModal(false)} className="g-btn-ghost px-3 py-1.5">
+                  Close
+                </button>
+                <button type="submit" className="g-btn-primary px-4 py-1.5">
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* Full-Screen Document Preview, Text Editing & Signature Studio */}

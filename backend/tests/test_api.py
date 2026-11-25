@@ -317,3 +317,74 @@ def test_ai_engine_fixes_sse_errors_and_history(monkeypatch):
         set_setting(db, "ai_provider", "auto", is_secret=False, category="ai")
         set_setting(db, "codex_access_token", "", is_secret=True, category="oauth")
         db.close()
+
+
+def test_v220_username_forgot_gmail_zip_delete():
+    """Verify v2.2.0: username login + testaccount all-tiers, Forgot Password PIN, Gmail Cron/Dual Mode, ZIP/TXT synthesis, and Safe Chat Delete + Undo."""
+    import io
+    import zipfile
+
+    with TestClient(app) as client:
+        # 1. All-tier testaccount login by username (no email needed!)
+        login = client.post("/api/auth/login", json={"username": "testaccount", "password": "testpassword"})
+        assert login.status_code == 200, login.text
+        u = login.json()["user"]
+        assert u["username"] == "testaccount"
+        assert u["all_tiers"] is True
+        h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        # 2. Forgot Password flow via username + offline Recovery PIN ('1234'), then restore 'testpassword'
+        req = client.post("/api/auth/forgot-password/request", json={"identifier": "testaccount"})
+        assert req.status_code == 200 and req.json()["has_recovery_pin"] is True
+        rst = client.post(
+            "/api/auth/forgot-password/reset",
+            json={"identifier": "testaccount", "recovery_pin": "1234", "new_password": "newpassword123"},
+        )
+        assert rst.status_code == 200 and rst.json()["reset"] is True
+        assert client.post("/api/auth/login", json={"username": "testaccount", "password": "newpassword123"}).status_code == 200
+        # Change password back to testpassword
+        chg = client.post(
+            "/api/auth/change-password",
+            headers=h,
+            json={"current_password": "newpassword123", "new_password": "testpassword"},
+        )
+        assert chg.status_code == 200 and chg.json()["updated"] is True
+
+        # 3. Gmail Automation Hub: overview, 5 seeded Dual-Mode rules, Run All, AI Draft, Hermes Cron sync
+        ov = client.get("/api/gmail/overview", headers=h)
+        assert ov.status_code == 200 and len(ov.json()["rules"]) >= 5
+        run_res = client.post("/api/gmail/run-all", headers=h)
+        assert run_res.status_code == 200 and run_res.json()["rules_evaluated"] >= 5
+        draft = client.post("/api/gmail/ai-draft", headers=h, json={"case_id": "C034", "topic": "passport expires soon"})
+        assert draft.status_code == 200 and draft.json()["whatsapp_text"]
+        hc = client.post("/api/gmail/sync-hermes-cron", headers=h)
+        assert hc.status_code == 200 and hc.json()["job_count"] >= 5
+
+        # 4. Universal ZIP & TXT Client Synthesizer + Confirm + Undo
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w") as zf:
+            zf.writestr(
+                "new_clients.txt",
+                "Full Name: Andre Wallace\nEmail: andre@example.jm\nParish: St. James\nOccupation: Chef\n\n---\n\nFull Name: Keisha Grant\nEmail: keisha@example.jm\nParish: Manchester\n",
+            )
+            zf.writestr("Andre_Wallace_passport.txt", "Passport scan placeholder for Andre Wallace")
+        zup = client.post(
+            "/api/agent/upload-chat-file",
+            headers=h,
+            files={"file": ("batch_clients.zip", zbuf.getvalue(), "application/zip")},
+        )
+        assert zup.status_code == 200, zup.text
+        zpa = zup.json()["pending_action"]
+        assert zup.json()["row_count"] == 2
+        assert client.post(f"/api/actions/{zpa['id']}/confirm", headers=h).status_code == 200
+        assert client.post(f"/api/actions/{zpa['id']}/undo", headers=h).status_code == 200
+
+        # 5. Safe Chat Delete + Confirm + Undo Snapshot Restore
+        del_cmd = client.post("/api/agent/command", headers=h, json={"message": "delete client C034", "case_id": "C034"})
+        assert del_cmd.status_code == 200 and del_cmd.json()["pending_action"]["action_type"] == "delete_client"
+        d_id = del_cmd.json()["pending_action"]["id"]
+        assert client.post(f"/api/actions/{d_id}/confirm", headers=h).status_code == 200
+        assert client.get("/api/clients/C034", headers=h).status_code == 404
+        assert client.post(f"/api/actions/{d_id}/undo", headers=h).status_code == 200
+        assert client.get("/api/clients/C034", headers=h).status_code == 200
+

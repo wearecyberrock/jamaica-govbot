@@ -14,9 +14,12 @@ export interface BrandingConfig {
 
 export interface UserAccount {
   id: number;
+  username?: string;
   email: string;
   full_name: string;
   role: "ceo" | "staff" | "customer";
+  all_tiers?: boolean;
+  has_recovery_pin?: boolean;
   linked_case_id: string | null;
   is_active: boolean;
   created_at?: string;

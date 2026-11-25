@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,11 +19,13 @@ from app.routers import (
     clients_router,
     database_router,
     documents_router,
+    gmail_router,
     interviews_router,
     oauth_voice_router,
     obsidian_router,
 )
 from app.seed import seed_all
+from app.services.gmail_service import background_cron_worker
 
 
 @asynccontextmanager
@@ -33,12 +36,20 @@ async def lifespan(_app: FastAPI):
         seed_all(db)
     finally:
         db.close()
-    yield
+    cron_task = asyncio.create_task(background_cron_worker(SessionLocal))
+    try:
+        yield
+    finally:
+        cron_task.cancel()
+        try:
+            await cron_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
     title=f"{APP_NAME} — Visa Intelligence & Document Automation API",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
@@ -59,6 +70,7 @@ app.include_router(obsidian_router.router)
 app.include_router(agent_router.router)
 app.include_router(ceo_settings_router.router)
 app.include_router(oauth_voice_router.router)
+app.include_router(gmail_router.router)
 
 
 @app.get("/health")

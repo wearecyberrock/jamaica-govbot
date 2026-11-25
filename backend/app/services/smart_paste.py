@@ -739,3 +739,232 @@ def build_dynamic_data_table(db: Session, msg: str) -> dict[str, Any] | None:
             "items": chart_items,
         },
     }
+
+
+# ── 4. Safe Chat Delete / Bulk Wipe (Always Preview/Confirm + Snapshot Undo!) ──
+
+def _snapshot_client(c: ClientCase) -> dict[str, Any]:
+    return {
+        "case_id": c.case_id,
+        "access_code": c.access_code,
+        "pseudonym": c.pseudonym,
+        "full_name": c.full_name,
+        "email": c.email,
+        "phone": c.phone,
+        "nationality": c.nationality,
+        "parish": c.parish,
+        "visa_class": c.visa_class,
+        "pipeline_stage": c.pipeline_stage,
+        "standing_score": c.standing_score,
+        "denial_risk_level": c.denial_risk_level,
+        "outcome": c.outcome,
+        "outcome_evidence": c.outcome_evidence,
+        "passport_number_enc": c.passport_number_enc,
+        "dob_enc": c.dob_enc,
+        "passport_expiry": c.passport_expiry,
+        "ds160_confirmation_id": c.ds160_confirmation_id,
+        "ais_appointment_barcode": c.ais_appointment_barcode,
+        "intended_travel_date": c.intended_travel_date,
+        "intended_return_date": c.intended_return_date,
+        "purpose_of_trip": c.purpose_of_trip,
+        "us_destination": c.us_destination,
+        "us_host_contact": c.us_host_contact,
+        "occupation": c.occupation,
+        "employer_name": c.employer_name,
+        "monthly_gross_jmd": c.monthly_gross_jmd,
+        "monthly_net_jmd": c.monthly_net_jmd,
+        "marital_status": c.marital_status,
+        "children_count": c.children_count,
+        "prior_us_refusals": c.prior_us_refusals,
+        "has_us_relatives": c.has_us_relatives,
+        "us_relatives_details": c.us_relatives_details,
+        "travel_history_summary": c.travel_history_summary,
+        "embassy_interview_date": c.embassy_interview_date,
+        "open_verification_items": c.open_verification_items,
+        "assigned_staff": c.assigned_staff,
+        "service_package_usd": c.service_package_usd,
+        "email_muted": bool(getattr(c, "email_muted", False)),
+    }
+
+
+def detect_chat_delete_or_reset(
+    db: Session,
+    user: User,
+    msg: str,
+    target_cid: str | None,
+) -> PendingAction | None:
+    """Detect destructive chat commands (delete client, delete all clients/reference cases, wipe/reset data) behind Confirm + Undo."""
+    if user.role not in ("ceo", "staff") and not bool(getattr(user, "all_tiers", False)):
+        return None
+    low = msg.lower().strip()
+    has_del = any(k in low for k in ("delete ", "remove ", "wipe ", "purge ", "clear all", "erase ", "reset all", "reset seed", "restore seed", "restore pristine"))
+    if not has_del:
+        return None
+
+    # A. Restore pristine unchanged seed data (CEO only)
+    if any(k in low for k in ("reset seed", "restore seed", "restore pristine", "unchanged data")):
+        if user.role != "ceo" and not bool(getattr(user, "all_tiers", False)):
+            return None
+        act = PendingAction(
+            user_id=user.id,
+            action_type="reset_seed_data",
+            target_ref="clients",
+            summary="Restore all 34 pristine unchanged seed clients (C001–C034) while keeping your API keys & Gov Sources",
+            before_json=json.dumps({"snapshot_count": db.query(ClientCase).count()}),
+            after_json=json.dumps({"action": "reset_seed_data"}),
+            status="pending",
+        )
+        db.add(act)
+        db.commit()
+        db.refresh(act)
+        return act
+
+    # B. Delete ALL clients / wipe all data (CEO only!)
+    if any(k in low for k in ("delete all data", "wipe all", "clear all data", "delete all client", "delete all case", "remove all client", "erase all")):
+        if user.role != "ceo" and not bool(getattr(user, "all_tiers", False)):
+            return None
+        all_clients = db.query(ClientCase).all()
+        if not all_clients:
+            return None
+        doc_count = db.query(ClientDocument).count()
+        snaps = [_snapshot_client(c) for c in all_clients]
+        act = PendingAction(
+            user_id=user.id,
+            action_type="wipe_all_clients",
+            target_ref="all_clients",
+            summary=f"⚠️ PERMANENT WIPE PREVIEW: Delete ALL {len(all_clients)} client case(s) and {doc_count} vault document(s) (1-click Undo snapshot saved)",
+            before_json=json.dumps({"clients": snaps}),
+            after_json=json.dumps({"deleted_count": len(all_clients), "doc_count": doc_count}),
+            status="pending",
+        )
+        db.add(act)
+        db.commit()
+        db.refresh(act)
+        return act
+
+    # C. Delete all Reference Cases
+    if "reference" in low and any(k in low for k in ("delete", "remove", "clear")):
+        refs = [c for c in db.query(ClientCase).all() if (c.full_name or "").startswith("Reference Case")]
+        if not refs:
+            return None
+        act = PendingAction(
+            user_id=user.id,
+            action_type="bulk_delete_clients",
+            target_ref="reference_cases",
+            summary=f"Delete {len(refs)} historical Reference Case(s) (keeps all active clients; Undo available)",
+            before_json=json.dumps({"clients": [_snapshot_client(c) for c in refs]}),
+            after_json=json.dumps({"case_ids": [c.case_id for c in refs]}),
+            status="pending",
+        )
+        db.add(act)
+        db.commit()
+        db.refresh(act)
+        return act
+
+    # D. Delete a specific client case (e.g., "delete C034", "remove Marcus Campbell")
+    if target_cid and any(k in low for k in ("delete", "remove", "erase")):
+        c = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first()
+        if not c:
+            return None
+        act = PendingAction(
+            user_id=user.id,
+            action_type="delete_client",
+            target_ref=c.case_id,
+            summary=f"Delete client {c.case_id} ({c.full_name or c.pseudonym}) — Undo snapshot saved",
+            before_json=json.dumps({"client": _snapshot_client(c)}),
+            after_json=json.dumps({"case_id": c.case_id}),
+            status="pending",
+        )
+        db.add(act)
+        db.commit()
+        db.refresh(act)
+        return act
+
+    return None
+
+
+# ── 5. Chat-Triggered Gmail Drafting, Cron Execution & Inbox Sync ────────────
+
+def detect_chat_gmail_command(
+    db: Session,
+    user: User,
+    msg: str,
+    target_cid: str | None,
+) -> dict[str, Any] | None:
+    """Handle natural-language Gmail automation commands in chat (draft/queue email, run cron, poll inbox)."""
+    if user.role not in ("ceo", "staff") and not bool(getattr(user, "all_tiers", False)):
+        return None
+    low = msg.lower().strip()
+
+    from app.models import EmailMessageLog
+    from app.services.gmail_service import (
+        draft_email_for_client,
+        get_gmail_config,
+        poll_gmail_inbox,
+        run_email_automation_cycle,
+        sync_rules_to_hermes_cron,
+    )
+
+    if any(k in low for k in ("poll inbox", "check inbox", "sync inbox", "check gmail", "poll gmail")):
+        res = poll_gmail_inbox(db, limit=25)
+        if res.get("ok"):
+            reply = (
+                f"**Gmail Inbox Synced!** Checked **{res['checked']}** recent email(s), matched **{res['matched_messages']}** client message(s), "
+                f"and auto-saved **{res['saved_attachments']}** attachment(s) into Client Vaults."
+            )
+        else:
+            reply = f"**Gmail Inbox Sync Note:** {res.get('error', 'Configure Gmail App Password in the Gmail > Connection tab first.')}"
+        return {"reply": reply, "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"}}
+
+    if any(k in low for k in ("run email cron", "run gmail cron", "run gmail automation", "run email rules", "trigger email cron")):
+        res = run_email_automation_cycle(db, force=True)
+        return {
+            "reply": (
+                f"**Gmail Automation Cycle Complete!**\n\n"
+                f"- **Rules Evaluated:** {res['rules_evaluated']}\n"
+                f"- **Sent Live:** {res['messages_sent']}\n"
+                f"- **Queued for Approval:** {res['messages_queued']}\n"
+                f"- **Dry-Run Previews:** {res['messages_dry_run']}\n"
+                f"- **Skipped (Anti-Spam Cooldown):** {res['skipped_cooldown']}\n\n"
+                "Opened the **Gmail Automation** panel on the right to review, approve, or copy for WhatsApp."
+            ),
+            "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
+        }
+
+    if "hermes cron" in low and any(k in low for k in ("sync", "export", "setup", "configure")):
+        res = sync_rules_to_hermes_cron(db)
+        return {
+            "reply": f"**Hermes Cron Synced ({res['job_count']} active rule(s))!**\n\n{res['note']}",
+            "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
+        }
+
+    if target_cid and any(k in low for k in ("email ", "send email", "draft email", "mail ", "notify ", "remind ")) and any(k in low for k in ("email", "mail", "gmail", "remind", "notify", "passport", "interview")):
+        client = db.query(ClientCase).filter(ClientCase.case_id == target_cid).first()
+        if client:
+            draft = draft_email_for_client(db, client, custom_topic=msg)
+            cfg = get_gmail_config(db)
+            log = EmailMessageLog(
+                case_id=client.case_id,
+                direction="outbound",
+                status="queued_approval",
+                to_email=client.email or "",
+                from_email=cfg["gmail_address"] or "pending-gmail-setup",
+                subject=draft["subject"],
+                body_text=draft["body_text"],
+                whatsapp_text=draft["whatsapp_text"],
+                ai_reason=draft["ai_reason"],
+                delivery_backend="gmail_smtp" if cfg["smtp_ready"] else ("composio" if cfg["composio_gmail_ready"] else "dry_run"),
+            )
+            db.add(log)
+            db.commit()
+            return {
+                "reply": (
+                    f"**Drafted & Queued Personalized Email for {client.case_id} ({client.full_name or client.pseudonym})!**\n\n"
+                    f"- **To:** `{client.email or 'No email on file yet'}`\n"
+                    f"- **Subject:** {draft['subject']}\n\n"
+                    "Review, edit, click **Approve & Send**, or **Copy for WhatsApp** in the **Gmail Automation** panel on the right."
+                ),
+                "ui_panel": {"panel": "gmail", "title": "Gmail Automation & Cron"},
+            }
+
+    return None

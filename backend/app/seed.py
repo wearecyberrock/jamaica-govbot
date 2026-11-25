@@ -28,6 +28,7 @@ from app.config import (
 from app.models import (
     BrandingConfig,
     ClientCase,
+    EmailAutomationRule,
     GeneratedAsset,
     GovSource,
     InterviewEvent,
@@ -822,8 +823,144 @@ def seed_all(db: Session) -> None:
             db.add(PipelineJournal(case_id="C034", event_type="assets_approved", actor="Staff Specialist", summary="Approved DS-160 Worksheet PDF, Kingston Checklist PDF, and Visual Roadmap PNG for client portal download."))
             db.commit()
 
-    # 9. Do NOT hardcode an owner/CEO login — the agency owner claims the single CEO account on first launch
-    # via /api/auth/setup-ceo, then creates Staff accounts, while Clients can self-register anytime.
+    # 9. Always ensure the built-in all-tier Test Account (`testaccount` / `testpassword`, Recovery PIN `1234`)
+    # exists so CEO, Staff, and Customer Portal tiers can be tested immediately with unchanged seed data.
+    test_u = db.query(User).filter(User.username == "testaccount").first()
+    if not test_u:
+        test_u = db.query(User).filter(User.email == "testaccount@jahtariatravel.com").first()
+    if not test_u:
+        db.add(
+            User(
+                username="testaccount",
+                email="testaccount@jahtariatravel.com",
+                full_name="Test Account (All Tiers)",
+                role="ceo",
+                all_tiers=True,
+                linked_case_id="C034",
+                password_hash=hash_password("testpassword"),
+                recovery_pin_hash=hash_password("1234"),
+                is_active=True,
+            )
+        )
+        db.commit()
+    else:
+        changed = False
+        if test_u.username != "testaccount":
+            test_u.username = "testaccount"
+            changed = True
+        if not test_u.all_tiers:
+            test_u.all_tiers = True
+            changed = True
+        if not test_u.linked_case_id:
+            test_u.linked_case_id = "C034"
+            changed = True
+        if not test_u.recovery_pin_hash:
+            test_u.recovery_pin_hash = hash_password("1234")
+            changed = True
+        if changed:
+            db.commit()
+
+    # 9b. Seed default Dual-Mode Gmail Automation & Cron Rules
+    if db.query(EmailAutomationRule).count() == 0:
+        default_rules = [
+            EmailAutomationRule(
+                name="Passport Expiring (< 6 Months)",
+                description="Automatically emails clients whose Jamaican passport expires within 180 days with PICA Simplified Adult Renewal guidance.",
+                rule_type="passport_expiry",
+                enabled=True,
+                send_mode="auto",
+                cron_expr="0 9 * * *",
+                interval_minutes=1440,
+                cooldown_days=14,
+                threshold_days=180,
+                subject_template="[{case_id}] Urgent: Jamaican Passport Validity Check ({passport_expiry})",
+                body_template=(
+                    "Hello {full_name},\n\n"
+                    "Our records show your Jamaican passport expires on {passport_expiry}. U.S. Embassy Kingston requires your passport "
+                    "to be undamaged and valid for at least 6 months beyond your intended U.S. travel date.\n\n"
+                    "Please renew via PICA Simplified Adult Renewal before locking in your appointment, and upload your new passport scan using your portal code {access_code}.\n\n"
+                    "Warm regards,\n{agency_name}"
+                ),
+                use_ai_personalization=True,
+            ),
+            EmailAutomationRule(
+                name="Kingston Embassy Interview Countdown (7 Days)",
+                description="Sends pre-interview logistics reminder 7 days before U.S. Embassy Kingston interview (142 Old Hope Rd no-cellphone rule & DS-160/AIS barcode match).",
+                rule_type="interview_countdown",
+                enabled=True,
+                send_mode="auto",
+                cron_expr="30 8 * * *",
+                interval_minutes=1440,
+                cooldown_days=5,
+                threshold_days=7,
+                subject_template="[{case_id}] Kingston Embassy Interview Reminder ({embassy_interview_date})",
+                body_template=(
+                    "Hello {full_name},\n\n"
+                    "Your U.S. Embassy Kingston interview is scheduled for {embassy_interview_date} at 142 Old Hope Road.\n\n"
+                    "Quick Kingston Checklist:\n"
+                    "- Confirm your DS-160 AA-barcode ({ds160_confirmation_id}) matches your AIS appointment profile\n"
+                    "- Bring one 2x2 white-background photo (no glasses) and 92%-scaled RGD certificate copies\n"
+                    "- Leave cellphones, smartwatches, and large bags outside (no storage at Embassy)\n\n"
+                    "Warm regards,\n{agency_name}"
+                ),
+                use_ai_personalization=True,
+            ),
+            EmailAutomationRule(
+                name="Unresolved Red Risk Flags & Missing Docs",
+                description="Queues a tailored staff-approved email listing unresolved RED flags and missing supporting documents.",
+                rule_type="missing_docs_red_flags",
+                enabled=True,
+                send_mode="approval",
+                cron_expr="0 10 */2 * *",
+                interval_minutes=2880,
+                cooldown_days=10,
+                threshold_days=30,
+                subject_template="[{case_id}] Action Needed: Items to Clear Before Your U.S. Visa Interview",
+                body_template=(
+                    "Hello {full_name},\n\n"
+                    "Our Consular Audit ({standing_score}% Good Standing) flagged priority items to verify before your appointment:\n"
+                    "{red_flags}\n\n"
+                    "Please reply with the requested documents or sign into your client portal with code {access_code}.\n\n"
+                    "Warm regards,\n{agency_name}"
+                ),
+                use_ai_personalization=True,
+            ),
+            EmailAutomationRule(
+                name="Unanswered Questionnaire Nudge",
+                description="Automatically nudges clients who still have pending verification questions in their Client Portal.",
+                rule_type="questionnaire_nudge",
+                enabled=True,
+                send_mode="auto",
+                cron_expr="0 11 */3 * *",
+                interval_minutes=4320,
+                cooldown_days=7,
+                threshold_days=30,
+                subject_template="[{case_id}] Quick Reminder: {unanswered_count} Verification Question(s) Waiting",
+                body_template=(
+                    "Hello {full_name},\n\n"
+                    "You have {unanswered_count} quick follow-up verification question(s) waiting in your Jahtaria Client Portal.\n"
+                    "Sign in anytime using your Case Code: {access_code}\n\n"
+                    "Warm regards,\n{agency_name}"
+                ),
+                use_ai_personalization=False,
+            ),
+            EmailAutomationRule(
+                name="Autonomous Consular AI Outreach (Dual Mode)",
+                description="Consular AI scans every active client profile daily and drafts bespoke outreach for the Approval Queue whenever it spots a risk or deadline.",
+                rule_type="ai_autonomous",
+                enabled=True,
+                send_mode="approval",
+                cron_expr="0 10 * * *",
+                interval_minutes=1440,
+                cooldown_days=14,
+                threshold_days=180,
+                subject_template="[{case_id}] Personal Visa Readiness Check-In",
+                body_template="",
+                use_ai_personalization=True,
+            ),
+        ]
+        db.add_all(default_rules)
+        db.commit()
 
     # 10. Seed Obsidian Vault Notes + Featured Client Dossiers
     _seed_obsidian_vault()
@@ -831,3 +968,25 @@ def seed_all(db: Session) -> None:
         client = db.query(ClientCase).filter(ClientCase.case_id == cid).first()
         if client and not (OBSIDIAN_VAULT_DIR / "Clients" / f"{cid}.md").exists():
             sync_client_to_obsidian(client, client.risk_flags, client.journal_entries)
+
+
+def reset_seed_clients_to_pristine(db: Session) -> dict[str, int]:
+    """Restore the unchanged pristine seeded clients (C001-C034), events, facts & assets while preserving API keys and GovSources."""
+    from app.models import ClientDocument, InterviewPrediction, RiskFlag
+
+    # Delete existing client rows cleanly (cascades risk_flags, predictions, facts, interview_events, journals, assets, documents)
+    removed = db.query(ClientCase).count()
+    for c in db.query(ClientCase).all():
+        db.delete(c)
+    db.query(InterviewEvent).delete()
+    db.query(PipelineJournal).delete()
+    db.query(ProfileFact).delete()
+    db.query(RiskFlag).delete()
+    db.query(InterviewPrediction).delete()
+    db.query(GeneratedAsset).delete()
+    db.query(ClientDocument).delete()
+    db.commit()
+
+    seed_all(db)
+    restored = db.query(ClientCase).count()
+    return {"removed_previous": removed, "restored_pristine_clients": restored}

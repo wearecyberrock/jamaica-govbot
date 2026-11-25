@@ -26,10 +26,15 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="customer")  # ceo | staff | customer
+    all_tiers: Mapped[bool] = mapped_column(Boolean, default=False)
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    recovery_pin_hash: Mapped[str] = mapped_column(String(512), default="")
+    reset_code_hash: Mapped[str] = mapped_column(String(512), default="")
+    reset_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     linked_case_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -94,6 +99,7 @@ class ClientCase(Base):
     service_package_usd: Mapped[float] = mapped_column(Float, default=250.0)
     embassy_interview_date: Mapped[str] = mapped_column(String(32), default="")
     assigned_staff: Mapped[str] = mapped_column(String(128), default="Staff Specialist")
+    email_muted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -410,4 +416,54 @@ class PendingAction(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending")  # pending | applied | undone | cancelled
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EmailAutomationRule(Base):
+    """Scheduled & AI-autonomous Gmail outreach rules (Dual Mode: auto-send vs approval queue)."""
+
+    __tablename__ = "email_automation_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    rule_type: Mapped[str] = mapped_column(String(64), nullable=False, default="custom")
+    # passport_expiry | interview_countdown | missing_docs_red_flags | questionnaire_nudge | post_interview_checkin | ai_autonomous | custom
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_mode: Mapped[str] = mapped_column(String(32), default="dual")  # auto | approval | dual
+    cron_expr: Mapped[str] = mapped_column(String(64), default="0 9 * * *")
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=1440)
+    cooldown_days: Mapped[int] = mapped_column(Integer, default=14)
+    threshold_days: Mapped[int] = mapped_column(Integer, default=180)
+    subject_template: Mapped[str] = mapped_column(String(255), default="")
+    body_template: Mapped[str] = mapped_column(Text, default="")
+    use_ai_personalization: Mapped[bool] = mapped_column(Boolean, default=True)
+    hermes_cron_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmailMessageLog(Base):
+    """Outbound Gmail automation queue/history & inbound client replies synced via IMAP."""
+
+    __tablename__ = "email_message_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    rule_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    direction: Mapped[str] = mapped_column(String(16), default="outbound")  # outbound | inbound
+    status: Mapped[str] = mapped_column(String(32), default="queued_approval")
+    # queued_approval | sent | dry_run | failed | rejected | received
+    to_email: Mapped[str] = mapped_column(String(255), default="")
+    from_email: Mapped[str] = mapped_column(String(255), default="")
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    whatsapp_text: Mapped[str] = mapped_column(Text, default="")
+    ai_reason: Mapped[str] = mapped_column(Text, default="")
+    delivery_backend: Mapped[str] = mapped_column(String(32), default="dry_run")  # gmail_smtp | composio | dry_run | imap_inbox
+    error_detail: Mapped[str] = mapped_column(Text, default="")
+    approved_by: Mapped[str] = mapped_column(String(128), default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
 

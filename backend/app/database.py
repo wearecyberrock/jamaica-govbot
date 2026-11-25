@@ -47,12 +47,38 @@ def init_db() -> None:
     from app import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
     # Safe additive column migrations for existing desktop SQLite databases
+    migrations = [
+        ("risk_flags", "options_json", "TEXT DEFAULT '[]'"),
+        ("users", "username", "VARCHAR(128)"),
+        ("users", "all_tiers", "BOOLEAN DEFAULT 0"),
+        ("users", "recovery_pin_hash", "VARCHAR(512) DEFAULT ''"),
+        ("users", "reset_code_hash", "VARCHAR(512) DEFAULT ''"),
+        ("users", "reset_code_expires_at", "DATETIME"),
+        ("clients", "email_muted", "BOOLEAN DEFAULT 0"),
+    ]
     try:
         insp = inspect(engine)
-        if "risk_flags" in insp.get_table_names():
-            cols = {c["name"] for c in insp.get_columns("risk_flags")}
-            if "options_json" not in cols:
-                with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE risk_flags ADD COLUMN options_json TEXT DEFAULT '[]'"))
+        tables = set(insp.get_table_names())
+        for tbl, col, col_def in migrations:
+            if tbl in tables:
+                cols = {c["name"] for c in insp.get_columns(tbl)}
+                if col not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}"))
+        # Backfill username for legacy users who only had email
+        if "users" in tables:
+            with engine.begin() as conn:
+                rows = conn.execute(text("SELECT id, email, username FROM users")).fetchall()
+                used = {str(r[2]).lower() for r in rows if r[2]}
+                for uid, email, uname in rows:
+                    if not uname:
+                        base = (str(email or f"user{uid}").split("@")[0]).lower().strip() or f"user{uid}"
+                        cand = base
+                        n = 1
+                        while cand in used:
+                            n += 1
+                            cand = f"{base}{n}"
+                        used.add(cand)
+                        conn.execute(text("UPDATE users SET username = :u WHERE id = :id"), {"u": cand, "id": uid})
     except Exception:
         pass
