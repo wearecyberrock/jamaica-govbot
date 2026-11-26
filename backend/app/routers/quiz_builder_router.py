@@ -19,6 +19,7 @@ from app.services.quiz_builder_service import (
     ensure_official_qa_seeded,
     generate_printable_quiz_pdf,
     generate_relationship_questions,
+    handle_quiz_builder_chat,
 )
 from app.services.risk_engine import evaluate_client_standing
 
@@ -225,3 +226,33 @@ def download_printable_quiz_pdf(
         media_type="application/pdf",
         filename=pdf_path.name,
     )
+
+
+class QuizChatRequest(BaseModel):
+    message: str
+    case_id: str | None = None
+    cohort: str = "all"
+    q_filter: str = "all"
+    a_filter: str = "all"
+    visa_class: str = "all"
+    effective_mode: bool = False
+
+
+@router.post("/chat")
+def quiz_builder_chat(
+    req: QuizChatRequest,
+    user: User = Depends(require_roles("staff", "ceo")),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    return handle_quiz_builder_chat(
+        db=db,
+        message=req.message,
+        current_case_id=req.case_id,
+        current_cohort=req.cohort,
+        current_q_filter=req.q_filter,
+        current_a_filter=req.a_filter,
+        current_visa_class=req.visa_class,
+        current_effective_mode=req.effective_mode,
+        author=user.full_name,
+    )
+

@@ -513,4 +513,28 @@ def test_v240_quiz_builder_and_weighted_risk():
         assert pdf_general.headers["content-type"] == "application/pdf"
         assert pdf_general.content.startswith(b"%PDF-")
 
+        # 8. Text-first Quiz Builder Chat Controller (generate -> Output propagation, effective pathway, patterns, print PDF)
+        ch_gen = client.post("/api/quiz-builder/chat", headers=h, json={"message": "Generate 3 questions for C034"})
+        assert ch_gen.status_code == 200, ch_gen.text
+        assert len(ch_gen.json()["output_questions"]) >= 1
+        assert ch_gen.json()["trigger_flow"] is True
+
+        ch_eff = client.post("/api/quiz-builder/chat", headers=h, json={"message": "Trace effective pathway and who gets approved most"})
+        assert ch_eff.status_code == 200
+        assert ch_eff.json()["canvas_state"]["effective_mode"] is True
+        assert "Client Types Getting Through Most" in ch_eff.json()["reply"]
+
+        ch_pat = client.post("/api/quiz-builder/chat", headers=h, json={"message": "Find all hidden patterns"})
+        assert ch_pat.status_code == 200
+        assert "Hidden Patterns" in ch_pat.json()["reply"]
+
+        ch_pdf = client.post("/api/quiz-builder/chat", headers=h, json={"message": "Print questions PDF for C034"})
+        assert ch_pdf.status_code == 200
+        assert ch_pdf.json()["print_pdf_url"] and "case_id=C034" in ch_pdf.json()["print_pdf_url"]
+
+        ch_flt = client.post("/api/quiz-builder/chat", headers=h, json={"message": "Filter hardest questions"})
+        assert ch_flt.status_code == 200
+        assert ch_flt.json()["canvas_state"]["q_filter"] == "hardest"
+
+
 

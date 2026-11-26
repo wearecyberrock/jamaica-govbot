@@ -1165,3 +1165,289 @@ def generate_printable_quiz_pdf(
 
     doc.build(story)
     return out_path
+
+
+def handle_quiz_builder_chat(
+    db: Session,
+    message: str,
+    current_case_id: str | None = None,
+    current_cohort: str = "all",
+    current_q_filter: str = "all",
+    current_a_filter: str = "all",
+    current_visa_class: str = "all",
+    current_effective_mode: bool = False,
+    author: str = "Quiz Builder Chat",
+) -> dict[str, Any]:
+    """Natural-language controller for the simplified Zoomable Quiz Builder Canvas + Chat panel."""
+    import re
+    from app.services import hermes_engine
+
+    ensure_official_qa_seeded(db)
+    raw = (message or "").strip()
+    low = raw.lower()
+
+    all_clients = db.query(ClientCase).all()
+    client_ids = {c.case_id.upper(): c for c in all_clients}
+
+    # 1. Detect explicit case ID (C034, co34, case 34) or client name mention
+    next_case = current_case_id or "ALL"
+    if any(k in low for k in ("all clients", "general bank", "everyone", "reset canvas", "show all")):
+        next_case = "ALL"
+    else:
+        m_cid = re.search(r"\b[cC][oO0]?(\d{1,3})\b", raw)
+        if m_cid:
+            cand = f"C{int(m_cid.group(1)):03d}"
+            if cand in client_ids:
+                next_case = cand
+        else:
+            for c in all_clients:
+                nm = (c.full_name or "").strip().lower()
+                if nm and len(nm) >= 5 and nm in low:
+                    next_case = c.case_id
+                    break
+
+    next_cohort = current_cohort
+    next_q_filter = current_q_filter
+    next_a_filter = current_a_filter
+    next_visa = current_visa_class
+    next_effective = current_effective_mode
+
+    # 2. Detect filter / cohort / visa commands
+    if any(k in low for k in ("reset", "clear filter", "show all")):
+        next_cohort = "all"
+        next_q_filter = "all"
+        next_a_filter = "all"
+        next_visa = "all"
+        next_effective = False
+
+    if any(k in low for k in ("hardest", "hard question", "toughest", "difficult")):
+        next_q_filter = "hardest"
+    elif any(k in low for k in ("weak", "risky", "unanswered", "gap")):
+        next_q_filter = "weak"
+    elif any(k in low for k in ("most common", "common", "frequent")):
+        next_q_filter = "most_common"
+    elif any(k in low for k in ("most used", "popular", "top used")):
+        next_q_filter = "most_used"
+
+    if "weak answer" in low or "refused answer" in low:
+        next_a_filter = "weak"
+    elif "strong answer" in low or "approved answer" in low or "winning answer" in low:
+        next_a_filter = "strong"
+    elif "common answer" in low:
+        next_a_filter = "most_common"
+
+    for vc in ("B1/B2", "F-1", "H-2B", "J-1"):
+        if vc.lower() in low or vc.replace("-", "").lower() in low:
+            next_visa = vc
+            break
+
+    if "prior refusal" in low or "re-applicant" in low:
+        next_cohort = "prior_refusal"
+    elif "self-employed" in low or "business owner" in low:
+        next_cohort = "self_employed"
+    elif "first-time" in low or "first time" in low:
+        next_cohort = "first_time"
+    elif "u.s. relative" in low or "us relative" in low:
+        next_cohort = "us_relatives"
+    elif "employed" in low:
+        next_cohort = "employed_b1b2"
+    elif "student" in low:
+        next_cohort = "student_f1"
+
+    canvas_state: dict[str, Any] = {
+        "case_id": next_case,
+        "cohort": next_cohort,
+        "q_filter": next_q_filter,
+        "a_filter": next_a_filter,
+        "visa_class": next_visa,
+        "effective_mode": next_effective,
+    }
+    output_questions: list[dict[str, Any]] = []
+    print_pdf_url: str | None = None
+    refresh_canvas = False
+    trigger_flow = False
+
+    # 3. Intent: Add Official Q&A (Z / A)
+    if any(k in low for k in ("add official", "new official", "save official", "enter official")):
+        # Parse "question ... answer ..." if provided
+        q_part = raw
+        a_part = ""
+        m_qa = re.search(r"(?:question|q)[:\-]\s*(.+?)(?:\s+(?:answer|a)[:\-]\s*(.+))?$", raw, re.IGNORECASE | re.DOTALL)
+        if m_qa:
+            q_part = (m_qa.group(1) or "").strip()
+            a_part = (m_qa.group(2) or "").strip()
+        else:
+            q_part = re.sub(r"^(?:please\s+)?(?:add|new|save|enter)\s+official\s+(?:question|q&a|qa)?[:\-\s]*", "", raw, flags=re.IGNORECASE).strip()
+        if q_part:
+            row = OfficialQA(
+                theme_id="purpose_of_trip",
+                visa_class=next_visa if next_visa != "all" else "B1/B2",
+                question_text=q_part,
+                answer_text=a_part or "Truthful, concise answer aligned with DS-160 and supporting documents.",
+                answer_quality="strong",
+                outcome_tag="approved",
+                difficulty="medium",
+                frequency_count=1,
+                profile_tags_json="[]",
+                added_by=author,
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            refresh_canvas = True
+            trigger_flow = True
+            return {
+                "reply": f"Added Official Question **`Z-{row.id}`** and Answer **`A-{row.id}`** onto the canvas:\n- **Q:** {row.question_text}\n- **A:** {row.answer_text}",
+                "canvas_state": canvas_state,
+                "refresh_canvas": refresh_canvas,
+                "trigger_flow": trigger_flow,
+                "output_questions": output_questions,
+                "print_pdf_url": None,
+            }
+
+    # 4. Intent: Print / Export PDF
+    if any(k in low for k in ("print", "pdf", "export sheet", "handout", "worksheet")):
+        pdf_case = next_case if next_case and next_case != "ALL" else "ALL"
+        print_pdf_url = f"/api/quiz-builder/print-pdf?case_id={pdf_case}&q_filter={next_q_filter}&include_answers=true"
+        scope_label = f"Case **{pdf_case}**" if pdf_case != "ALL" else "**General Agency Question Bank**"
+        return {
+            "reply": f"Prepared the printable interview question sheet for {scope_label} (filter: `{next_q_filter}`). Opening PDF now — you can also click the button below to reprint anytime.",
+            "canvas_state": canvas_state,
+            "refresh_canvas": False,
+            "trigger_flow": False,
+            "output_questions": [],
+            "print_pdf_url": print_pdf_url,
+        }
+
+    # 5. Intent: Analyze Hidden Patterns
+    if any(k in low for k in ("pattern", "hidden", "analyz", "analys", "mine ", "anomaly", "cluster")):
+        pat = analyze_hidden_patterns(db=db, case_id=None if next_case == "ALL" else next_case)
+        canvas_state["effective_mode"] = True
+        lines = [
+            f"### Hidden Patterns Across {pat['dataset_summary']['total_cases']} Cases ({pat['dataset_summary']['embassy_events']} Embassy Qs)",
+            pat["executive_summary"],
+            "",
+            "**Top Approving Client Types:**",
+        ]
+        for co in pat["cohort_stats"][:4]:
+            rate = f"{co['approval_rate_pct']}%" if co["approval_rate_pct"] is not None else "In Prep"
+            lines.append(f"- **{co['label']}**: {rate} ({co['sample_label']}) · Avg Docs/Data Standing `{co['avg_standing_score']}%`")
+        if pat["question_chains"]:
+            lines.append("")
+            lines.append("**Embassy Follow-Up Pivot Chains (`Z1 → Z2`):**")
+            for ch in pat["question_chains"][:3]:
+                lines.append(f"- `{ch['from_theme']} → {ch['to_theme']}` ({ch['occurrences']}×)")
+        if pat["co_occurring_risks"]:
+            lines.append("")
+            lines.append("**Co-Occurring Risk Clusters:**")
+            for cr in pat["co_occurring_risks"][:3]:
+                lines.append(f"- `{cr['flag_a']}` + `{cr['flag_b']}` ({cr['cases_affected']} cases)")
+        if pat["anomalies"]:
+            lines.append("")
+            lines.append("**Blind Spots & Anomalies:**")
+            for an in pat["anomalies"][:3]:
+                lines.append(f"- {an}")
+        return {
+            "reply": "\n".join(lines),
+            "canvas_state": canvas_state,
+            "refresh_canvas": True,
+            "trigger_flow": True,
+            "output_questions": [],
+            "print_pdf_url": None,
+        }
+
+    # 6. Intent: Generate Questions (Propagation Flow -> Output Nodes!)
+    if any(k in low for k in ("generat", "new question", "create question", "predict", "build quiz", "make question", "propagat")):
+        m_cnt = re.search(r"\b(\d+)\b", raw)
+        cnt = max(1, min(8, int(m_cnt.group(1)))) if m_cnt else 4
+        focus = next_q_filter if next_q_filter != "all" else "all"
+        gen = generate_relationship_questions(
+            db=db,
+            case_id=None if next_case == "ALL" else next_case,
+            count=cnt,
+            focus=focus,
+            author=author,
+        )
+        output_questions = gen["generated"]
+        canvas_state["case_id"] = gen["case_id"]
+        canvas_state["effective_mode"] = True
+        lines = [
+            f"Propagated **{len(output_questions)} new questions** into the **Output** column for **{gen['case_id']}** (via `{gen['provider']}`):",
+            "",
+        ]
+        for idx, q in enumerate(output_questions, start=1):
+            lines.append(f"{idx}. **{q['question_text']}** (`{q['theme_id'].replace('_', ' ')}`)")
+        lines.append("\nRight-click any node on the canvas or click its dropdown arrow (`▾`) to inspect rationale, play voice, or record answers.")
+        return {
+            "reply": "\n".join(lines),
+            "canvas_state": canvas_state,
+            "refresh_canvas": True,
+            "trigger_flow": True,
+            "output_questions": output_questions,
+            "print_pdf_url": None,
+        }
+
+    # 7. Intent: Effective Pathway / Who Gets Approved Most
+    if any(k in low for k in ("effective", "pathway", "trace", "who gets", "get through", "approval rate", "approved most", "best client")):
+        canvas_state["effective_mode"] = True
+        cohorts = compute_cohort_approval_stats(db)
+        lines = [
+            f"**Effective Pathway ON** — tracing `X → Y → Z → A → Output` for **{next_case if next_case != 'ALL' else 'All Matching Clients'}**.",
+            "",
+            "**Client Types Getting Through Most:**",
+        ]
+        for co in cohorts:
+            rate = f"**{co['approval_rate_pct']}%**" if co["approval_rate_pct"] is not None else "In Prep"
+            lines.append(f"- {co['label']}: {rate} ({co['sample_label']}) · Avg Docs/Data `{co['avg_standing_score']}%`")
+        return {
+            "reply": "\n".join(lines),
+            "canvas_state": canvas_state,
+            "refresh_canvas": True,
+            "trigger_flow": True,
+            "output_questions": [],
+            "print_pdf_url": None,
+        }
+
+    # 8. Filter / Scope-Only Command
+    state_changed = (
+        next_case != (current_case_id or "ALL")
+        or next_cohort != current_cohort
+        or next_q_filter != current_q_filter
+        or next_a_filter != current_a_filter
+        or next_visa != current_visa_class
+        or next_effective != current_effective_mode
+    )
+    if state_changed:
+        parts = [f"Scope: **{next_case}**"]
+        if next_q_filter != "all":
+            parts.append(f"Questions: `{next_q_filter.replace('_', ' ')}`")
+        if next_a_filter != "all":
+            parts.append(f"Answers: `{next_a_filter.replace('_', ' ')}`")
+        if next_visa != "all":
+            parts.append(f"Visa: `{next_visa}`")
+        if next_cohort != "all":
+            parts.append(f"Cohort: `{next_cohort.replace('_', ' ')}`")
+        return {
+            "reply": f"Updated canvas — {' · '.join(parts)}.\nClick any node's `▾` dropdown or right-click to inspect, speak, or trace its flow.",
+            "canvas_state": canvas_state,
+            "refresh_canvas": True,
+            "trigger_flow": True,
+            "output_questions": [],
+            "print_pdf_url": None,
+        }
+
+    # 9. General Conversational Coaching / Q&A (delegates cleanly to configured LLM or offline advisor)
+    ctx_note = ""
+    if next_case != "ALL" and next_case in client_ids:
+        cl = client_ids[next_case]
+        ctx_note = f"[Active Quiz Builder Client: {cl.case_id} ({cl.full_name or cl.pseudonym}), {cl.visa_class}, Docs/Data Standing {cl.standing_score}%, Occupation: {cl.occupation or 'N/A'}] "
+    ans = hermes_engine.answer_customer_question(db, f"{ctx_note}{raw}")
+    return {
+        "reply": ans.get("reply") or "Ask me to **generate questions**, **filter hardest/weak**, **trace effective pathway**, **find hidden patterns**, or **print PDF**.",
+        "canvas_state": canvas_state,
+        "refresh_canvas": False,
+        "trigger_flow": False,
+        "output_questions": [],
+        "print_pdf_url": None,
+    }
+
