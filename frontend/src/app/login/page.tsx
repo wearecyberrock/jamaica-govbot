@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Crown, LogIn, UserPlus, KeyRound, ShieldCheck, RefreshCw, ArrowLeft } from "lucide-react";
+import { Crown, LogIn, ShieldCheck, RefreshCw, ArrowLeft } from "lucide-react";
 import { apiFetch, setAuthSession } from "@/lib/api";
 import type { BrandingConfig, UserAccount } from "@/lib/types";
 import { DoctorBirdWatermark } from "@/components/DoctorBirdWatermark";
@@ -184,23 +184,21 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Mode Switcher */}
-          {mode !== "forgot" && (
+          {/* Mode Switcher (Agency CEO & Staff Only — Client Login Removed) */}
+          {mode !== "forgot" && ceoExists === false && (
             <div className="flex flex-wrap gap-1 bg-[#111318] p-1 rounded-xl border border-white/10">
-              {ceoExists === false && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode("setup_ceo");
-                    setError("");
-                  }}
-                  className={`flex-1 min-w-[110px] py-2 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
-                    mode === "setup_ceo" ? "bg-amber-500/20 text-amber-300 border border-amber-400/30" : "text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  <Crown className="w-3.5 h-3.5" /> Setup CEO
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("setup_ceo");
+                  setError("");
+                }}
+                className={`flex-1 min-w-[110px] py-2 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                  mode === "setup_ceo" ? "bg-amber-500/20 text-amber-300 border border-amber-400/30" : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Crown className="w-3.5 h-3.5" /> Setup CEO
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -211,32 +209,13 @@ export default function LoginPage() {
                   mode === "login" ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                <LogIn className="w-3.5 h-3.5" /> Sign In
+                <LogIn className="w-3.5 h-3.5" /> Staff / CEO Sign In
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("signup");
-                  setError("");
-                }}
-                className={`flex-1 min-w-[100px] py-2 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
-                  mode === "signup" ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                <UserPlus className="w-3.5 h-3.5" /> Client Sign Up
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("code");
-                  setError("");
-                }}
-                className={`flex-1 min-w-[90px] py-2 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
-                  mode === "code" ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                <KeyRound className="w-3.5 h-3.5" /> Case Code
-              </button>
+            </div>
+          )}
+          {mode === "login" && ceoExists !== false && (
+            <div className="text-center text-[11px] uppercase tracking-wider text-slate-400 font-semibold py-1 border-y border-white/10">
+              Agency Staff &amp; CEO Command Portal
             </div>
           )}
 

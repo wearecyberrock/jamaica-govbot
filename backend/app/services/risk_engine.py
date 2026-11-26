@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models import ClientCase, InterviewPrediction, QuestionTaxonomy, RiskFlag
+from app.models import ClientCase, ClientDocument, InterviewEvent, InterviewPrediction, QuestionTaxonomy, RiskFlag
 
 
 def _parse_date(val: str | None) -> date | None:
@@ -40,7 +40,14 @@ def _load_json_list(raw: str | None) -> list[str]:
 
 
 def evaluate_client_standing(db: Session, client: ClientCase) -> dict[str, Any]:
-    """Run deterministic Kingston Embassy & Jahtaria compliance checks and persist RiskFlags."""
+    """Run deterministic Kingston Embassy & Jahtaria compliance checks and persist RiskFlags.
+
+    Scoring Policy (v2.4.0 Correction):
+    - Documents & Verified Personal Data drive ~90% of Good Standing / Risk Score.
+    - Answering follow-up or mock practice questions NEVER erases a missing document or
+      personal-data contradiction; it contributes ONLY a small readiness bump (+1 pt per
+      answered question/practice item, strictly capped at +6 pts total).
+    """
 
     # Keep client responses from existing flags if re-auditing
     existing_responses: dict[str, tuple[str, bool]] = {}
@@ -50,7 +57,9 @@ def evaluate_client_standing(db: Session, client: ClientCase) -> dict[str, Any]:
     db.query(RiskFlag).filter(RiskFlag.case_id == client.case_id).delete()
 
     flags: list[dict[str, Any]] = []
-    score = 100
+    # 94 pts come from Documents & Verified Personal Data; up to +6 pts come from Practice Questions (total 100)
+    score = 94
+    answered_clarifications = 0
     tags = set(t.lower() for t in _load_json_list(client.profile_tags_json))
 
     def add_flag(
@@ -65,14 +74,20 @@ def evaluate_client_standing(db: Session, client: ClientCase) -> dict[str, Any]:
         source_url: str,
         penalty: int,
     ) -> None:
-        nonlocal score
+        nonlocal score, answered_clarifications
         prev_resp, prev_resolved = existing_responses.get(code, ("", False))
-        effective_penalty = 0 if prev_resolved else penalty
+        # Answering a text question does NOT wipe out a real document/data risk penalty!
+        # Only fixing the underlying client data or document removes the penalty.
+        has_answer = bool((prev_resp or "").strip()) or bool(prev_resolved)
+        if has_answer and penalty > 0:
+            answered_clarifications += 1
+        # Keep full data/document penalty (tiny 1-pt recognition handled in capped practice_bonus below)
+        effective_penalty = penalty
         score -= effective_penalty
         flags.append(
             {
                 "code": code,
-                "severity": "green" if prev_resolved else severity,
+                "severity": severity,
                 "category": category,
                 "title": title,
                 "detail": detail,
@@ -337,7 +352,39 @@ def evaluate_client_standing(db: Session, client: ClientCase) -> dict[str, Any]:
         penalty=0,
     )
 
-    score = max(5, min(100, score))
+    # 8. Vault Documents & Practice Readiness Split (Documents + Data = 94 pts, Practice Questions = up to +6 pts)
+    vault_docs = db.query(ClientDocument).filter(ClientDocument.case_id == client.case_id).all()
+    vault_categories = {d.category for d in vault_docs if d.category}
+    doc_bonus = min(4, len(vault_categories) * 2) if vault_docs else 0
+    if not vault_docs and (client.outcome_evidence or "").lower() in ("in_preparation", "intake", ""):
+        add_flag(
+            code="VAULT_DOCS_MISSING",
+            severity="amber",
+            category="documents_vault",
+            title="Supporting Evidence Documents Not Yet Uploaded to Vault",
+            detail="Documents & verified personal data are the primary risk drivers. Upload passport scan, payslips/employment letter, bank statements, and 92% RGD copies to the Client Vault.",
+            suggested_fix="Upload supporting PDFs/images into the client's Vault so staff can verify figures directly against DS-160.",
+            follow_up_question="Which supporting documents (passport scan, payslips, employment letter, bank statement, RGD certificates) are ready to upload?",
+            source_citation="U.S. Embassy Kingston — Supporting Evidence Standard",
+            source_url="https://jm.usembassy.gov/visas/",
+            penalty=6,
+        )
+
+    has_active_risk = any(f["severity"] in ("red", "amber") for f in flags)
+    max_data_cap = 92 if has_active_risk else 94
+    data_and_docs_score = max(5, min(max_data_cap, score + doc_bonus))
+
+    # Count mock interview practice answers + answered follow-up clarifications — VERY small capped lift!
+    practice_events = (
+        db.query(InterviewEvent)
+        .filter(InterviewEvent.case_id == client.case_id, InterviewEvent.event_mode == "mock_practice")
+        .count()
+    )
+    total_practice_answered = answered_clarifications + practice_events
+    # Max +6 pts total from answering questions — NEVER overrides missing docs or data contradictions!
+    practice_bonus = min(6, total_practice_answered)
+
+    score = max(5, min(100, data_and_docs_score + practice_bonus))
     if score >= 80:
         risk_level = "low"
     elif score >= 60:
@@ -362,7 +409,14 @@ def evaluate_client_standing(db: Session, client: ClientCase) -> dict[str, Any]:
         "amber_count": sum(1 for f in flags if f["severity"] == "amber"),
         "green_count": sum(1 for f in flags if f["severity"] == "green"),
         "flags": flags,
-        "compliance_note": "Good Standing reflects truthful documentation completeness and risk-flag clearance only — never a guarantee of U.S. visa approval.",
+        "score_breakdown": {
+            "data_and_docs_score": data_and_docs_score,
+            "practice_bonus": practice_bonus,
+            "practice_bonus_cap": 6,
+            "practice_answered_count": total_practice_answered,
+            "vault_doc_count": len(vault_docs),
+        },
+        "compliance_note": "Good Standing is driven primarily by verified Documents & Personal Data (~90%). Practice questions contribute only a small readiness lift (max +6 pts) and never guarantee visa approval.",
     }
 
 

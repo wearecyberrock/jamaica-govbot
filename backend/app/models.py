@@ -467,3 +467,25 @@ class EmailMessageLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class OfficialQA(Base):
+    """Official U.S. Embassy / organization interview questions (Z) and verified answer patterns/outcomes (A)."""
+
+    __tablename__ = "official_qa"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    theme_id: Mapped[str] = mapped_column(String(128), index=True, default="purpose_of_trip")
+    visa_class: Mapped[str] = mapped_column(String(32), default="B1/B2")
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, default="")
+    answer_quality: Mapped[str] = mapped_column(String(32), default="strong")  # strong | weak | caution
+    outcome_tag: Mapped[str] = mapped_column(String(32), default="approved")  # approved | refused | admin_processing | policy
+    difficulty: Mapped[str] = mapped_column(String(32), default="medium")  # easy | medium | hard
+    frequency_count: Mapped[int] = mapped_column(Integer, default=1)
+    profile_tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_case_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    added_by: Mapped[str] = mapped_column(String(128), default="System Seed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+

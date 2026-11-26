@@ -87,16 +87,18 @@ jobs:
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.3.1-alpha
-          name: "Jahtaria Visa Intelligence Alpha v2.3.1 (Windows SSL Certificate Fix + Built-In Update Checker)"
+          tag_name: v2.4.0-alpha
+          name: "Jahtaria Visa Intelligence Alpha v2.4.0 (Quiz Builder X/Y/Z/A Diagram + Weighted Risk Engine + Hidden Pattern Analysis)"
           body: |
-            ## Jahtaria Visa Intelligence Alpha — v2.3.1 (Windows Setup.exe)
+            ## Jahtaria Visa Intelligence Alpha — v2.4.0 (Windows Setup.exe)
 
-            **Zero Python, zero Node.js, zero Docker required.** Run **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.3.1.exe`** right over your existing install — **all your local client records, accounts, and Obsidian vault are preserved automatically.**
+            **Zero Python, zero Node.js, zero Docker required.** Run **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.4.0.exe`** right over your existing install — **all your local client records, accounts, and Obsidian vault are preserved automatically.**
 
-            ### What's Fixed in v2.3.1 Alpha
-            - **Windows SSL / TLS Certificate Fix (OpenAI Codex OAuth, ElevenLabs, Fish Audio & Gmail):** Bundled `truststore` (reads Windows's native Certificate Store automatically — works even behind antivirus Web Shields & corporate proxies!) + `certifi` CA roots inside the frozen Windows `.exe`, eliminating `SSL: CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`.
-            - **Built-In Update Checker:** Checks GitHub Releases automatically on launch (and via `Jahtaria Alpha → Check for Updates...`) so future updates notify you with a 1-click download button.
+            ### What's New in v2.4.0 Alpha
+            - **Interactive Quiz Builder (`X / Y / Z / A` Relationship Diagram Canvas):** New sidebar tab with live SVG Bezier mapping connecting **X** (Generated Questions from Client Data & DB) → **Y** (Client Practice Answers) ↔ **Z** (Official U.S. Embassy Questions) → **A** (Official Winning Answers & Proof Patterns). Includes **Generate Questions**, criteria filters (*Most Common*, *Hardest*, *Weak/Risky*, *Most Used*, answer strength, visa class), **Effective Pathway** client/cohort tracing showing which client types get through the most (`n` sample counts), **Analyze Hidden Patterns** deep pattern & Embassy follow-up chain miner, and **Print Questions** formatted PDF sheets (for a specific client OR general agency training bank).
+            - **Weighted Good Standing & Risk Scoring Correction:** Documents & Personal Data now drive ~90% of risk; answering follow-up or practice questions no longer wipes out real document/personal-data risk penalties and instead contributes a small, honest capped readiness lift (`+1` per item, up to `+6` pts max).
+            - **Streamlined Agency Staff & CEO Login:** Removed Client Sign Up and Case Code tabs from `/login` while keeping all existing internal client case management, questionnaires, mock practice, and popups intact.
+            - **Includes v2.3.1 Fixes:** Windows SSL/TLS native Certificate Store (`truststore` + `certifi`) for OpenAI Codex OAuth & Voice, plus built-in GitHub Releases update checker.
           files: |
             desktop/dist/*.exe
             JAHTARIA_ALPHA_USER_GUIDE.md

@@ -14,7 +14,7 @@ from app.auth import get_current_user, require_roles
 from app.database import get_db
 from app.models import ClientCase, InterviewEvent, InterviewPrediction, PipelineJournal, User
 from app.services.hermes_engine import COMPLIANCE_SYSTEM_PROMPT, call_llm
-from app.services.risk_engine import generate_ranked_predictions
+from app.services.risk_engine import evaluate_client_standing, generate_ranked_predictions
 
 router = APIRouter(prefix="/api", tags=["interviews"])
 
@@ -168,6 +168,8 @@ def practice_mock_interview(
             summary=f"Completed mock practice for theme '{req.theme}' ({'DISCREPANCY FLAGGED' if discrepancy else 'aligned'}).",
         )
     )
+    db.flush()
+    standing = evaluate_client_standing(db, c)
     db.commit()
 
     return {
@@ -176,6 +178,8 @@ def practice_mock_interview(
         "discrepancy_type": discrepancy,
         "feedback": feedback,
         "provider_used": provider,
+        "standing_score": standing["standing_score"],
+        "score_breakdown": standing.get("score_breakdown", {}),
     }
 
 

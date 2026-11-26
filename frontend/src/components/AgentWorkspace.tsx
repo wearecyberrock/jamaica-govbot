@@ -35,6 +35,7 @@ import {
   Mail,
   KeyRound,
   X,
+  GitBranch,
 } from "lucide-react";
 import { apiFetch, clearAuthSession, getStoredToken, getStoredUser, setAuthSession } from "@/lib/api";
 import type {
@@ -51,6 +52,7 @@ import { RichMarkdown } from "./RichMarkdown";
 import { ChatQuestionnaireCard } from "./ChatQuestionnaireCard";
 import { ChatDataTableCard } from "./ChatDataTableCard";
 import { DocumentStudioModal } from "./DocumentStudioModal";
+import { QuizBuilderModal } from "./QuizBuilderModal";
 import { DoctorBirdWatermark } from "./DoctorBirdWatermark";
 
 interface PendingActionData {
@@ -203,6 +205,8 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   const [dragActive, setDragActive] = useState(false);
   const [panelRefreshNonce, setPanelRefreshNonce] = useState(0);
   const [studioTarget, setStudioTarget] = useState<StudioTarget | null>(null);
+  const [showQuizBuilder, setShowQuizBuilder] = useState(false);
+  const [quizBuilderCaseId, setQuizBuilderCaseId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -634,6 +638,16 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             <>
               <SidebarBtn icon={Users} label="Clients" open={sidebarOpen} active={rightPanel?.panel === "clients_list"} onClick={() => openPanel({ panel: "clients_list", title: "Client Pipeline" })} />
               <SidebarBtn icon={FileSpreadsheet} label="Spreadsheet" open={sidebarOpen} active={rightPanel?.panel === "spreadsheet"} onClick={() => openPanel({ panel: "spreadsheet", title: "Client Spreadsheet & Vault" })} />
+              <SidebarBtn
+                icon={GitBranch}
+                label="Quiz Builder"
+                open={sidebarOpen}
+                active={showQuizBuilder}
+                onClick={() => {
+                  setQuizBuilderCaseId(activeCaseId);
+                  setShowQuizBuilder(true);
+                }}
+              />
               <SidebarBtn icon={Mail} label="Gmail & Cron" open={sidebarOpen} active={rightPanel?.panel === "gmail"} onClick={() => openPanel({ panel: "gmail", title: "Gmail Automation & Cron" })} />
               <SidebarBtn icon={FileText} label="Official PDFs" open={sidebarOpen} active={rightPanel?.panel === "official_pdfs"} onClick={() => openPanel({ panel: "official_pdfs", title: "Official Government PDF Viewer" })} />
               <SidebarBtn icon={Globe} label="Gov Sources" open={sidebarOpen} active={rightPanel?.panel === "gov_sources"} onClick={() => openPanel({ panel: "gov_sources", title: "Official Scraped Gov Sources" })} />
@@ -1316,6 +1330,10 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             onNavigatePanel={openPanel}
             onSelectCaseForChat={(cid) => selectActiveClient(cid)}
             onOpenStudio={(target) => setStudioTarget(target)}
+            onOpenQuizBuilder={(cid) => {
+              setQuizBuilderCaseId(cid);
+              setShowQuizBuilder(true);
+            }}
             onImportQuestionnaireToChat={(payload) => {
               selectActiveClient(payload.case_id);
               setTurns((prev) => {
@@ -1444,6 +1462,17 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           activeCaseId={activeCaseId}
           onClose={() => setStudioTarget(null)}
           onSaved={() => setPanelRefreshNonce((n) => n + 1)}
+        />
+      )}
+
+      {/* Full-Screen Quiz Builder (X/Y/Z/A Relationship Diagram + Effective Pathway + Hidden Patterns + Print) */}
+      {showQuizBuilder && (
+        <QuizBuilderModal
+          initialCaseId={quizBuilderCaseId ?? activeCaseId}
+          onClose={() => {
+            setShowQuizBuilder(false);
+            setPanelRefreshNonce((n) => n + 1);
+          }}
         />
       )}
     </div>

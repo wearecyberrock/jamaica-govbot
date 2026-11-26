@@ -401,3 +401,116 @@ def test_v220_username_forgot_gmail_zip_delete():
         assert client.post(f"/api/actions/{d_id}/undo", headers=h).status_code == 200
         assert client.get("/api/clients/C034", headers=h).status_code == 200
 
+
+def test_v240_quiz_builder_and_weighted_risk():
+    """Verify v2.4.0: Docs & Personal Data remain primary risk weight (Q&A gives small capped bump), plus full Quiz Builder X/Y/Z/A, Effective Pathway, Hidden Patterns & Printable PDF."""
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "testaccount", "password": "testpassword"})
+        assert login.status_code == 200, login.text
+        h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        # 1. Weighted Risk Scoring: answering a follow-up question or mock practice gives ONLY a small capped bump
+        before = client.get("/api/clients/C034", headers=h).json()
+        before_score = before["standing_score"]
+        open_flags = [f for f in before["risk_flags"] if f["severity"] in ("red", "amber") and f["category"] != "ai_questionnaire"]
+        assert len(open_flags) >= 1, "C034 should have active data/document risk flags"
+
+        # Answer 8 mock practice questions — readiness lift must stay small and strictly capped at +6
+        for i in range(8):
+            mp = client.post(
+                "/api/clients/C034/mock-practice",
+                headers=h,
+                json={
+                    "theme": f"purpose_of_trip_{i}",
+                    "question_text": f"Practice question {i}?",
+                    "client_answer": "I am attending a 5-day business conference in Miami and returning to my salaried job in Kingston.",
+                },
+            )
+            assert mp.status_code == 200, mp.text
+            sb = mp.json()["score_breakdown"]
+            assert sb["practice_bonus"] <= 6
+
+        after = client.get("/api/clients/C034", headers=h).json()
+        # Score must NOT magically jump to 100% just from answering practice questions while real data risks exist
+        assert after["standing_score"] - before_score <= 6
+        assert after["standing_score"] < 100
+
+        # 2. Quiz Builder Canvas (X / Y / Z / A + SVG relationship edges + Effective Pathway cohorts)
+        canvas_res = client.get("/api/quiz-builder/canvas?case_id=C034&effective_mode=true", headers=h)
+        assert canvas_res.status_code == 200, canvas_res.text
+        cv = canvas_res.json()
+        assert len(cv["lane_x"]) >= 1
+        assert len(cv["lane_y"]) >= 1
+        assert len(cv["lane_z"]) >= 5
+        assert len(cv["lane_a"]) >= 5
+        assert len(cv["edges"]) >= 1
+        assert len(cv["effective"]["cohort_stats"]) >= 3
+        assert len(cv["clients_picker"]) >= 10
+
+        # Criteria filters work cleanly
+        for qf in ("most_common", "hardest", "weak", "most_used"):
+            fr = client.get(f"/api/quiz-builder/canvas?q_filter={qf}", headers=h)
+            assert fr.status_code == 200, fr.text
+
+        # 3. Generate new relationship-backed questions
+        gen = client.post("/api/quiz-builder/generate", headers=h, json={"case_id": "C034", "count": 3, "focus": "weak"})
+        assert gen.status_code == 200, gen.text
+        assert len(gen.json()["generated"]) >= 1
+
+        # 4. Official Q&A (Lane Z / A) Create + Delete
+        oqa = client.post(
+            "/api/quiz-builder/official-qa",
+            headers=h,
+            json={
+                "theme_id": "employer_ties",
+                "visa_class": "B1/B2",
+                "question_text": "How long have you worked at your current employer in Jamaica?",
+                "answer_text": "State exact hire date, role, monthly salary matching DS-160, and bring your job letter.",
+                "answer_quality": "strong",
+                "outcome_tag": "approved",
+                "difficulty": "medium",
+            },
+        )
+        assert oqa.status_code == 200, oqa.text
+        qa_id = oqa.json()["id"]
+        assert client.delete(f"/api/quiz-builder/official-qa/{qa_id}", headers=h).status_code == 200
+
+        # 5. Save Lane Y Client Answer
+        first_x = cv["lane_x"][0]
+        sy = client.post(
+            "/api/quiz-builder/save-answer",
+            headers=h,
+            json={
+                "case_id": "C034",
+                "source_type": first_x["source_type"],
+                "db_id": first_x["db_id"],
+                "theme_id": first_x["theme_id"],
+                "question_text": first_x["question_text"],
+                "answer_text": "I have been a senior nurse at UHWI for 6 years and am visiting my sister in Fort Lauderdale for 7 days.",
+            },
+        )
+        assert sy.status_code == 200, sy.text
+        assert sy.json()["saved"] is True
+        assert sy.json()["score_breakdown"]["practice_bonus"] <= 6
+
+        # 6. Hidden Pattern Analysis
+        pat = client.post("/api/quiz-builder/analyze-patterns", headers=h, json={"case_id": "C034"})
+        assert pat.status_code == 200, pat.text
+        pd = pat.json()
+        assert pd["dataset_summary"]["total_cases"] >= 10
+        assert len(pd["cohort_stats"]) >= 3
+        assert len(pd["trait_patterns"]) >= 1
+        assert pd["executive_summary"]
+
+        # 7. Printable PDF (specific client + general question bank)
+        pdf_client = client.get("/api/quiz-builder/print-pdf?case_id=C034", headers=h)
+        assert pdf_client.status_code == 200
+        assert pdf_client.headers["content-type"] == "application/pdf"
+        assert pdf_client.content.startswith(b"%PDF-")
+
+        pdf_general = client.get("/api/quiz-builder/print-pdf?case_id=ALL&q_filter=hardest", headers=h)
+        assert pdf_general.status_code == 200
+        assert pdf_general.headers["content-type"] == "application/pdf"
+        assert pdf_general.content.startswith(b"%PDF-")
+
+

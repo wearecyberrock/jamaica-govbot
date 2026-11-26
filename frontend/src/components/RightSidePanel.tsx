@@ -28,8 +28,10 @@ import {
   Package,
   Scissors,
   Zap,
+  GitBranch,
+  Printer,
 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getStoredToken } from "@/lib/api";
 import type {
   BrandingConfig,
   ChatQuestionnairePayload,
@@ -81,6 +83,7 @@ interface RightSidePanelProps {
   onSelectCaseForChat: (caseId: string) => void;
   onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
   onOpenStudio?: (target: StudioTarget) => void;
+  onOpenQuizBuilder?: (caseId: string) => void;
   onBrandingUpdated: (b: BrandingConfig) => void;
   onClose: () => void;
 }
@@ -98,6 +101,7 @@ export function RightSidePanel({
   onSelectCaseForChat,
   onImportQuestionnaireToChat,
   onOpenStudio,
+  onOpenQuizBuilder,
   onBrandingUpdated,
   onClose,
 }: RightSidePanelProps) {
@@ -213,6 +217,7 @@ export function RightSidePanel({
             refreshNonce={refreshNonce}
             onImportQuestionnaireToChat={onImportQuestionnaireToChat}
             onOpenStudio={onOpenStudio}
+            onOpenQuizBuilder={onOpenQuizBuilder}
             onOpenObsidian={(path) => onNavigatePanel({ panel: "obsidian", path, title: `Obsidian — ${path}` })}
           />
         )}
@@ -556,6 +561,7 @@ function ClientInspectorSubPanel({
   refreshNonce = 0,
   onImportQuestionnaireToChat,
   onOpenStudio,
+  onOpenQuizBuilder,
   onOpenObsidian,
 }: {
   caseId: string;
@@ -565,6 +571,7 @@ function ClientInspectorSubPanel({
   refreshNonce?: number;
   onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
   onOpenStudio?: (target: StudioTarget) => void;
+  onOpenQuizBuilder?: (caseId: string) => void;
   onOpenObsidian: (p: string) => void;
 }) {
   const [client, setClient] = useState<ClientDetail | null>(null);
@@ -640,6 +647,22 @@ function ClientInspectorSubPanel({
     setTimeout(() => setMsg(""), 4000);
   };
 
+  const printClientQuestions = async () => {
+    if (!client) return;
+    try {
+      const token = getStoredToken();
+      const res = await fetch(`/api/quiz-builder/print-pdf?case_id=${encodeURIComponent(client.case_id)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Could not generate printable PDF.");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    } catch (err: unknown) {
+      flash(err instanceof Error ? err.message : "Print failed");
+    }
+  };
+
   if (!client) return <div className="text-xs text-slate-400 p-4">Loading case {caseId}…</div>;
 
   const activeAsset = client.assets.find((a) => a.id === previewId) || client.assets[0] || null;
@@ -657,7 +680,7 @@ function ClientInspectorSubPanel({
               <h3 className="text-sm font-bold text-white">{client.full_name || client.pseudonym}</h3>
             </div>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              {client.visa_class} • Code: <code>{client.access_code}</code> • Stage: {client.pipeline_stage.replace(/_/g, " ")}
+              {client.visa_class} • Stage: {client.pipeline_stage.replace(/_/g, " ")}
             </p>
           </div>
           <div className="text-right">
@@ -666,14 +689,19 @@ function ClientInspectorSubPanel({
           </div>
         </div>
 
-        <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
-          <div
-            className={`h-full transition-all ${client.standing_score >= 80 ? "bg-emerald-500" : client.standing_score >= 60 ? "bg-amber-400" : "bg-red-500"}`}
-            style={{ width: `${client.standing_score}%` }}
-          />
+        <div className="space-y-1">
+          <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className={`h-full transition-all ${client.standing_score >= 80 ? "bg-emerald-500" : client.standing_score >= 60 ? "bg-amber-400" : "bg-red-500"}`}
+              style={{ width: `${client.standing_score}%` }}
+            />
+          </div>
+          <p className="text-[10px] text-slate-500">
+            Driven primarily by Documents &amp; Personal Data • Practice Q&amp;A adds up to +6% readiness
+          </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <select className="g-input text-xs flex-1" value={view} onChange={(e) => setView(e.target.value)}>
             <option value="overview">
               Good Standing &amp; Risk Flags ({client.risk_flags.filter((f) => f.category !== "ai_questionnaire").length})
@@ -683,6 +711,24 @@ function ClientInspectorSubPanel({
             <option value="blueprints">Documents, Visual Roadmap &amp; Approval ({client.assets.length})</option>
             {isStaffOrCeo && <option value="journal">Pipeline Journal ({client.journal?.length || 0})</option>}
           </select>
+          {isStaffOrCeo && onOpenQuizBuilder && (
+            <button
+              onClick={() => onOpenQuizBuilder(client.case_id)}
+              className="g-btn-ghost px-2.5 py-2 text-xs inline-flex items-center gap-1 shrink-0 text-[#e5b84b] border-[#e5b84b]/30 hover:bg-[#e5b84b]/10"
+              title="Open Client in Quiz Builder (X/Y/Z/A Diagram)"
+            >
+              <GitBranch className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {isStaffOrCeo && (
+            <button
+              onClick={printClientQuestions}
+              className="g-btn-ghost px-2.5 py-2 text-xs inline-flex items-center gap-1 shrink-0"
+              title="Print Client Interview Questions PDF"
+            >
+              <Printer className="w-3.5 h-3.5" />
+            </button>
+          )}
           {isStaffOrCeo && (
             <button
               onClick={async () => {

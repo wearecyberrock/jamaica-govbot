@@ -23,6 +23,7 @@ from app.routers import (
     interviews_router,
     oauth_voice_router,
     obsidian_router,
+    quiz_builder_router,
 )
 from app.seed import seed_all
 from app.services.gmail_service import background_cron_worker
@@ -49,7 +50,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title=f"{APP_NAME} Alpha — Visa Intelligence & Document Automation API",
-    version="2.3.0-alpha",
+    version="2.4.0-alpha",
     lifespan=lifespan,
 )
 
@@ -71,6 +72,7 @@ app.include_router(agent_router.router)
 app.include_router(ceo_settings_router.router)
 app.include_router(oauth_voice_router.router)
 app.include_router(gmail_router.router)
+app.include_router(quiz_builder_router.router)
 
 
 @app.get("/health")
