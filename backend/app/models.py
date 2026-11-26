@@ -488,4 +488,27 @@ class OfficialQA(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class LiveExtension(Base):
+    """Safe AI-mutable layer: custom risk rules, sandboxed sidebar widgets, Quiz Builder cohorts & PDF templates with 1-click rollback."""
+
+    __tablename__ = "live_extensions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    ext_type: Mapped[str] = mapped_column(String(32), index=True, default="widget")
+    # widget | risk_rule | quiz_cohort | pdf_template
+    description: Mapped[str] = mapped_column(Text, default="")
+    icon: Mapped[str] = mapped_column(String(64), default="sparkles")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    code_html: Mapped[str] = mapped_column(Text, default="")
+    previous_snapshot_json: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(128), default="Hermes Builder")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+
 

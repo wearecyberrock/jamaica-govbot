@@ -36,6 +36,8 @@ import {
   KeyRound,
   X,
   GitBranch,
+  Puzzle,
+  LayoutGrid,
 } from "lucide-react";
 import { apiFetch, clearAuthSession, getStoredToken, getStoredUser, setAuthSession } from "@/lib/api";
 import type {
@@ -53,6 +55,7 @@ import { ChatQuestionnaireCard } from "./ChatQuestionnaireCard";
 import { ChatDataTableCard } from "./ChatDataTableCard";
 import { DocumentStudioModal } from "./DocumentStudioModal";
 import { QuizBuilderModal } from "./QuizBuilderModal";
+import type { LiveExtensionItem } from "./LiveExtensionsPanel";
 import { DoctorBirdWatermark } from "./DoctorBirdWatermark";
 
 interface PendingActionData {
@@ -207,8 +210,15 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   const [studioTarget, setStudioTarget] = useState<StudioTarget | null>(null);
   const [showQuizBuilder, setShowQuizBuilder] = useState(false);
   const [quizBuilderCaseId, setQuizBuilderCaseId] = useState<string | null>(null);
+  const [customWidgets, setCustomWidgets] = useState<LiveExtensionItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const loadCustomWidgets = () => {
+    apiFetch<LiveExtensionItem[]>("/api/extensions?ext_type=widget&enabled_only=true")
+      .then(setCustomWidgets)
+      .catch(() => {});
+  };
 
   const loadConversations = () => {
     apiFetch<SavedConv[]>("/api/conversations").then(setConversations).catch(() => {});
@@ -261,15 +271,17 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
           setActiveClients(list);
         })
         .catch(() => {});
+      loadCustomWidgets();
     }
   }, [router, requiredRole]);
 
-  // Keep sidebar client list live whenever clients are created, renamed, deleted, or switched
+  // Keep sidebar client list & custom modules live whenever changed
   useEffect(() => {
     if (!user || (user.role !== "ceo" && user.role !== "staff")) return;
     apiFetch<ClientSummary[]>("/api/clients")
       .then((list) => setActiveClients(list))
       .catch(() => {});
+    loadCustomWidgets();
   }, [panelRefreshNonce, activeCaseId, user]);
 
   useEffect(() => {
@@ -653,8 +665,30 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
               <SidebarBtn icon={Globe} label="Gov Sources" open={sidebarOpen} active={rightPanel?.panel === "gov_sources"} onClick={() => openPanel({ panel: "gov_sources", title: "Official Scraped Gov Sources" })} />
               <SidebarBtn icon={Database} label="Database" open={sidebarOpen} active={rightPanel?.panel === "database"} onClick={() => openPanel({ panel: "database", table: "clients", title: "Database Explorer" })} />
               <SidebarBtn icon={BookOpen} label="Obsidian Vault" open={sidebarOpen} active={rightPanel?.panel === "obsidian"} onClick={() => openPanel({ panel: "obsidian", path: "Index.md", title: "Obsidian Vault" })} />
+              <SidebarBtn icon={Puzzle} label="Live Extensions" open={sidebarOpen} active={rightPanel?.panel === "extensions"} onClick={() => openPanel({ panel: "extensions", title: "Live Extensions & Self-Evolution" })} />
               {isCeo && (
                 <SidebarBtn icon={UserPlus} label="Team & Staff" open={sidebarOpen} active={rightPanel?.panel === "team"} onClick={() => openPanel({ panel: "team", title: "Team & Staff Accounts" })} />
+              )}
+
+              {/* Hermes-Built Live Custom Modules (mounts automatically when user builds widgets via chat) */}
+              {customWidgets.length > 0 && (
+                <div className="pt-2.5">
+                  {sidebarOpen && (
+                    <div className="px-2.5 pb-1 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                      Custom Modules ({customWidgets.length})
+                    </div>
+                  )}
+                  {customWidgets.map((w) => (
+                    <SidebarBtn
+                      key={w.slug}
+                      icon={LayoutGrid}
+                      label={w.name}
+                      open={sidebarOpen}
+                      active={rightPanel?.panel === "custom_widget" && rightPanel?.doc_key === w.slug}
+                      onClick={() => openPanel({ panel: "custom_widget", doc_key: w.slug, title: w.name })}
+                    />
+                  ))}
+                </div>
               )}
 
               {/* User-Picked Active Clients (starts blank; grows as you select clients; click × to remove) */}
@@ -1333,6 +1367,10 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
             onOpenQuizBuilder={(cid) => {
               setQuizBuilderCaseId(cid);
               setShowQuizBuilder(true);
+            }}
+            onExtensionsChanged={() => {
+              loadCustomWidgets();
+              setPanelRefreshNonce((n) => n + 1);
             }}
             onImportQuestionnaireToChat={(payload) => {
               selectActiveClient(payload.case_id);

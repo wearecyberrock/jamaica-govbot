@@ -363,6 +363,31 @@ def compute_cohort_approval_stats(db: Session) -> list[dict[str, Any]]:
             }
         )
 
+    # Include live agency custom cohorts built by Hermes
+    from app.services.extensions_service import client_matches_custom_cohort, get_custom_cohorts
+
+    for cc in get_custom_cohorts(db):
+        matched = [c for c in clients if client_matches_custom_cohort(c, cc["config"])]
+        approved = sum(1 for c in matched if _client_outcome(c) == "approved")
+        refused = sum(1 for c in matched if _client_outcome(c) == "refused")
+        decided = approved + refused
+        avg_standing = round(sum(c.standing_score for c in matched) / len(matched), 1) if matched else 0.0
+        results.append(
+            {
+                "cohort_id": cc["cohort_id"],
+                "label": cc["label"],
+                "summary": cc["summary"],
+                "total_clients": len(matched),
+                "decided_cases": decided,
+                "approved_count": approved,
+                "refused_count": refused,
+                "approval_rate_pct": round((approved / decided) * 100, 1) if decided > 0 else None,
+                "avg_standing_score": avg_standing,
+                "top_themes": [],
+                "sample_label": f"n={decided} decided ({len(matched)} total)" if decided else f"n={len(matched)} in prep",
+            }
+        )
+
     results.sort(key=lambda r: (r["approval_rate_pct"] is not None, r["approval_rate_pct"] or 0, r["total_clients"]), reverse=True)
     return results
 
@@ -1156,6 +1181,11 @@ def generate_printable_quiz_pdf(
     )
     story.append(tbl2)
     story.append(Spacer(1, 10))
+    from app.services.extensions_service import get_custom_pdf_notes
+
+    for note in get_custom_pdf_notes(db):
+        story.append(Paragraph(f"<b>Agency Note:</b> {note.replace('&', '&amp;').replace('<', '&lt;')}", meta_st))
+        story.append(Spacer(1, 4))
     story.append(
         Paragraph(
             "<i>Compliance Notice: Truthful interview readiness &amp; factual verification only. Never memorize scripted falsehoods — final decisions rest solely with the U.S. Consular Officer.</i>",

@@ -19,6 +19,7 @@ from app.routers import (
     clients_router,
     database_router,
     documents_router,
+    extensions_router,
     gmail_router,
     interviews_router,
     oauth_voice_router,
@@ -50,7 +51,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title=f"{APP_NAME} Alpha — Visa Intelligence & Document Automation API",
-    version="2.4.1-alpha",
+    version="2.5.0-alpha",
     lifespan=lifespan,
 )
 
@@ -73,6 +74,7 @@ app.include_router(ceo_settings_router.router)
 app.include_router(oauth_voice_router.router)
 app.include_router(gmail_router.router)
 app.include_router(quiz_builder_router.router)
+app.include_router(extensions_router.router)
 
 
 @app.get("/health")

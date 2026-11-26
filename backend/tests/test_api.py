@@ -537,4 +537,75 @@ def test_v240_quiz_builder_and_weighted_risk():
         assert ch_flt.json()["canvas_state"]["q_filter"] == "hardest"
 
 
+def test_v250_live_extensions_self_evolution():
+    """Verify v2.5.0: Safe Self-Evolving Software Engine (live custom risk rules, sandboxed widgets, Quiz cohorts, 1-click Undo, rollback, and .jahtaria-pack export/import)."""
+    from app.services.extensions_service import validate_widget_html
+
+    # 1. Sandbox security validator blocks unsafe scripts/exfiltration
+    assert validate_widget_html("<script>eval('bad')</script>")[0] is False
+    assert validate_widget_html("<script>document.cookie</script>")[0] is False
+    assert validate_widget_html("<div>Safe live widget</div>")[0] is True
+
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "testaccount", "password": "testpassword"})
+        assert login.status_code == 200
+        h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        # 2. Build a live sandboxed sidebar widget via main Chat -> returns UI panel + 1-click Undo!
+        w_cmd = client.post(
+            "/api/agent/command",
+            headers=h,
+            json={"message": "Build me a Passport Expiry Tracker widget"},
+        )
+        assert w_cmd.status_code == 200, w_cmd.text
+        assert w_cmd.json()["provider_used"] == "hermes-live-builder"
+        assert w_cmd.json()["ui_panel"]["panel"] == "custom_widget"
+        slug = w_cmd.json()["ui_panel"]["doc_key"]
+        pa_id = w_cmd.json()["pending_action"]["id"]
+
+        # Sandboxed HTML render endpoint injects live window.JAHTARIA_DATA
+        rend = client.get(f"/api/extensions/{slug}/render", headers=h)
+        assert rend.status_code == 200
+        assert "window.JAHTARIA_DATA" in rend.text
+        assert "Passport Expiry" in rend.text
+
+        # 3. Build a live custom risk rule -> immediately evaluates inside evaluate_client_standing()!
+        r_res = client.post(
+            "/api/extensions/build",
+            headers=h,
+            json={"prompt": "Add a custom risk rule: flag -12 pts if B1/B2 missing documents"},
+        )
+        assert r_res.status_code == 200, r_res.text
+        rule_ext = r_res.json()["extension"]
+        assert rule_ext["ext_type"] == "risk_rule"
+        assert r_res.json()["affected_cases"] >= 1
+
+        # 4. Build a live Quiz Builder cohort -> immediately appears in Quiz Builder Effective Pathway!
+        c_res = client.post(
+            "/api/extensions/build",
+            headers=h,
+            json={"prompt": "Add a cohort for Hospitality workers"},
+        )
+        assert c_res.status_code == 200
+        assert c_res.json()["extension"]["ext_type"] == "quiz_cohort"
+        cv = client.get("/api/quiz-builder/canvas?effective_mode=true", headers=h).json()
+        assert any("Hospitality" in co["label"] for co in cv["effective"]["cohort_stats"])
+
+        # 5. Export & re-import portable .jahtaria-pack.json
+        pack = client.get("/api/extensions/export-pack", headers=h)
+        assert pack.status_code == 200 and pack.json()["count"] >= 3
+        imp = client.post("/api/extensions/import-pack", headers=h, json=pack.json())
+        assert imp.status_code == 200 and imp.json()["imported_count"] >= 3
+
+        # 6. 1-Click Rollback works on updated version
+        rb = client.post(f"/api/extensions/{rule_ext['id']}/rollback", headers=h)
+        assert rb.status_code == 200
+
+        # 7. 1-Click Undo on the Chat-built widget removes it cleanly
+        undo = client.post(f"/api/actions/{pa_id}/undo", headers=h)
+        assert undo.status_code == 200 and undo.json()["status"] == "undone"
+        assert client.get(f"/api/extensions/{slug}", headers=h).status_code == 404
+
+
+
 

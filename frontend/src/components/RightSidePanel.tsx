@@ -46,6 +46,7 @@ import type {
 } from "@/lib/types";
 import { ClientSpreadsheetView } from "./ClientSpreadsheetView";
 import { GmailAutomationPanel } from "./GmailAutomationPanel";
+import { CustomWidgetSubPanel, LiveExtensionsSubPanel } from "./LiveExtensionsPanel";
 
 export interface PanelRequest {
   panel:
@@ -59,6 +60,8 @@ export interface PanelRequest {
     | "gov_sources"
     | "database"
     | "obsidian"
+    | "extensions"
+    | "custom_widget"
     | "team"
     | "settings";
   case_id?: string;
@@ -84,6 +87,7 @@ interface RightSidePanelProps {
   onImportQuestionnaireToChat?: (payload: ChatQuestionnairePayload) => void;
   onOpenStudio?: (target: StudioTarget) => void;
   onOpenQuizBuilder?: (caseId: string) => void;
+  onExtensionsChanged?: () => void;
   onBrandingUpdated: (b: BrandingConfig) => void;
   onClose: () => void;
 }
@@ -102,6 +106,7 @@ export function RightSidePanel({
   onImportQuestionnaireToChat,
   onOpenStudio,
   onOpenQuizBuilder,
+  onExtensionsChanged,
   onBrandingUpdated,
   onClose,
 }: RightSidePanelProps) {
@@ -232,6 +237,24 @@ export function RightSidePanel({
         {request.panel === "gov_sources" && <GovSourcesSubPanel canScrape={isStaffOrCeo} refreshNonce={refreshNonce} />}
         {request.panel === "database" && isStaffOrCeo && <DatabaseSubPanel initialTable={request.table || "clients"} />}
         {request.panel === "obsidian" && isStaffOrCeo && <ObsidianSubPanel initialPath={request.path || "Index.md"} />}
+        {request.panel === "extensions" && isStaffOrCeo && (
+          <LiveExtensionsSubPanel
+            refreshNonce={refreshNonce}
+            onOpenWidget={(slug, name) =>
+              onNavigatePanel({ panel: "custom_widget", doc_key: slug, title: name })
+            }
+            onExtensionsChanged={() => onExtensionsChanged?.()}
+          />
+        )}
+        {request.panel === "custom_widget" && isStaffOrCeo && request.doc_key && (
+          <CustomWidgetSubPanel
+            slug={request.doc_key}
+            refreshNonce={refreshNonce}
+            onManageExtensions={() =>
+              onNavigatePanel({ panel: "extensions", title: "Live Extensions & Self-Evolution" })
+            }
+          />
+        )}
         {request.panel === "team" && isCeo && <TeamSubPanel />}
         {request.panel === "settings" && isStaffOrCeo && (
           <SettingsSubPanel isCeo={isCeo} branding={branding} onBrandingUpdated={onBrandingUpdated} />

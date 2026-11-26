@@ -651,6 +651,25 @@ def undo_applied_action(
         r = db.query(EmailAutomationRule).filter(EmailAutomationRule.id == rid).first()
         if r:
             db.delete(r)
+    elif act.action_type == "live_extension":
+        from app.models import LiveExtension
+        from app.services.extensions_service import _remove_disk_mirror, rollback_extension
+
+        eid = int(before.get("extension_id") or act.target_ref or 0)
+        ext = db.query(LiveExtension).filter(LiveExtension.id == eid).first()
+        if ext:
+            was_rule = ext.ext_type == "risk_rule"
+            if before.get("existed") and (before.get("snapshot") or "").strip():
+                ext.previous_snapshot_json = before["snapshot"]
+                rollback_extension(db, ext)
+            else:
+                slug = ext.slug
+                db.delete(ext)
+                db.flush()
+                _remove_disk_mirror(slug)
+            if was_rule:
+                for cl in db.query(ClientCase).all():
+                    evaluate_client_standing(db, cl)
 
     act.status = "undone"
     db.commit()
@@ -1201,8 +1220,11 @@ def unified_agent_command(
         target_cid = _detect_case_id(db, msg, req.case_id)
 
         # 0. Smart Paste Auto-Setup FIRST (API keys, MCP URLs/JSON, ClawLink, Composio, pasted CSV, Gov URLs!)
+        from app.services.extensions_service import detect_chat_extension_command
+
         smart = detect_and_apply_smart_paste(db, user, msg)
         gmail_cmd = None if smart else detect_chat_gmail_command(db, user, msg, target_cid)
+        ext_cmd = None if (smart or gmail_cmd) else detect_chat_extension_command(db, user, msg)
         if smart:
             # Redact pasted secret keys from saved chat history!
             if smart.get("redacted_message"):
@@ -1219,6 +1241,12 @@ def unified_agent_command(
             ui_panel = gmail_cmd.get("ui_panel")
             reply = gmail_cmd["reply"]
             provider = "gmail-automation"
+        elif ext_cmd:
+            if ext_cmd.get("pending_action"):
+                pending_action_payload = _serialize_action(ext_cmd["pending_action"])
+            ui_panel = ext_cmd.get("ui_panel")
+            reply = ext_cmd["reply"]
+            provider = "hermes-live-builder"
         else:
             # 1. Check Safe Chat Delete / Wipe OR CEO/Staff Conversational Edit / Client Creation (Preview/Confirm + Undo!)
             proposed = (

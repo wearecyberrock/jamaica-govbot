@@ -370,6 +370,11 @@ def evaluate_client_standing(db: Session, client: ClientCase) -> dict[str, Any]:
             penalty=6,
         )
 
+    # 8b. Live Agency Custom Risk Rules (AI-Mutable Layer — safely isolated)
+    from app.services.extensions_service import evaluate_custom_risk_rules
+
+    evaluate_custom_risk_rules(db, client, add_flag)
+
     has_active_risk = any(f["severity"] in ("red", "amber") for f in flags)
     max_data_cap = 92 if has_active_risk else 94
     data_and_docs_score = max(5, min(max_data_cap, score + doc_bonus))
