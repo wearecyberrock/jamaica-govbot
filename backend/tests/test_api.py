@@ -716,5 +716,110 @@ def test_v251_model_selection_and_antigravity_disconnect(monkeypatch):
             db.close()
 
 
+def test_v252_codex_live_discovery_and_http400_failover(monkeypatch):
+    """Verify v2.5.2: live Codex /models discovery, retired-slug migration, and HTTP 400 unsupported-model auto-failover."""
+    import base64
+    import json
+
+    from app.database import SessionLocal
+    from app.services import hermes_engine, oauth_hub
+    from app.services.connectors import get_setting, set_setting
+
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_codex_live_999",
+                    "chatgpt_data_residency": "us",
+                }
+            }
+        ).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    fake_jwt = f"eyJhbGciOiJSUzI1NiJ9.{payload}.sig"
+
+    # 1. Verify _codex_account_headers extracts both ChatGPT-Account-ID and residency
+    hdrs = oauth_hub._codex_account_headers(fake_jwt)
+    assert hdrs["ChatGPT-Account-ID"] == "acct_codex_live_999"
+    assert hdrs["x-openai-internal-codex-residency"] == "us"
+
+    # 2. Verify live /backend-api/codex/models?client_version=99.0.0 discovery + hidden filtering + priority sorting
+    seen_reqs: list[tuple[str, dict]] = []
+
+    class _MockCodexModelsResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "models": [
+                    {"slug": "gpt-5.6-luna", "priority": 2, "visibility": "list"},
+                    {"slug": "hidden-internal", "priority": 0, "visibility": "hidden"},
+                    {"slug": "gpt-6-sol", "priority": 1, "visibility": "list"},
+                    {"slug": "gpt-5.5", "priority": 3, "visibility": "list"},
+                ]
+            }
+
+    class _MockHttpxClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            seen_reqs.append((url, headers or {}))
+            if "chatgpt.com/backend-api/codex/models" in url:
+                return _MockCodexModelsResp()
+            raise RuntimeError("offline")
+
+    oauth_hub.clear_model_catalog_cache()
+    monkeypatch.setattr(oauth_hub.httpx, "Client", _MockHttpxClient)
+
+    models, is_live = oauth_hub.discover_codex_models(fake_jwt)
+    assert is_live is True
+    assert models == ["gpt-6-sol", "gpt-5.6-luna", "gpt-5.5"]
+    assert "hidden-internal" not in models
+    assert any("client_version=99.0.0" in u and h.get("ChatGPT-Account-ID") == "acct_codex_live_999" for u, h in seen_reqs)
+
+    # 3. Verify catalog auto-migrates stale saved `gpt-5.4` when account's live catalog doesn't support it
+    db = SessionLocal()
+    try:
+        set_setting(db, "codex_access_token", fake_jwt, is_secret=True, category="oauth")
+        set_setting(db, "ai_provider", "openai-codex", is_secret=False, category="ai")
+        set_setting(db, "ai_model", "gpt-5.4", is_secret=False, category="ai")
+        cat = oauth_hub.get_grouped_model_catalog(db)
+        assert cat["active_provider"] == "openai-codex"
+        assert cat["active_model"] == "gpt-6-sol"
+        assert cat["codex_live_discovered"] is True
+        assert get_setting(db, "ai_model", "") == "gpt-6-sol"
+
+        # 4. Verify HTTP 400 "not supported when using Codex with a ChatGPT account" automatically fails over & persists working model
+        set_setting(db, "ai_model", "gpt-5.4", is_secret=False, category="ai")
+        attempted: list[str] = []
+
+        def fake_codex_sse(token, codex_model, system_prompt, history, user_prompt):
+            attempted.append(codex_model)
+            if codex_model == "gpt-5.4":
+                return None, 400, "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."
+            if codex_model == "gpt-6-sol":
+                return "Live reply from gpt-6-sol!", 200, None
+            return None, 400, "unexpected"
+
+        monkeypatch.setattr(hermes_engine, "_call_openai_codex_sse", fake_codex_sse)
+        res = hermes_engine.call_llm_detailed(db, "sys", "hi")
+        assert res["text"] == "Live reply from gpt-6-sol!"
+        assert res["provider"] == "chatgpt-codex:gpt-6-sol"
+        assert attempted == ["gpt-5.4", "gpt-6-sol"]
+        assert get_setting(db, "ai_model", "") == "gpt-6-sol"
+    finally:
+        set_setting(db, "codex_access_token", "", is_secret=True, category="oauth")
+        set_setting(db, "ai_provider", "auto", is_secret=False, category="ai")
+        set_setting(db, "ai_model", "auto-flagship", is_secret=False, category="ai")
+        oauth_hub.clear_model_catalog_cache()
+        db.close()
+
+
 
 

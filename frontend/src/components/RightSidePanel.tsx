@@ -2551,7 +2551,7 @@ function SettingsSubPanel({
             className="g-input text-xs flex-1 min-w-0"
             value={customModelId}
             onChange={(e) => setCustomModelId(e.target.value)}
-            placeholder="Custom Model ID (e.g. gemini-4-neon, gpt-5.4, claude-opus-5-5)..."
+            placeholder="Custom Model ID (e.g. gpt-6-sol, gemini-4-neon, claude-fable-5-2)..."
           />
           <button
             type="button"

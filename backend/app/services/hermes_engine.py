@@ -215,6 +215,17 @@ def _extract_output_text_from_response_obj(resp_obj: dict[str, Any]) -> str:
     return "".join(parts).strip()
 
 
+def _extract_codex_residency(token: str) -> str | None:
+    """Extract optional chatgpt_data_residency / chatgpt_compute_residency claim from Codex JWT."""
+    payload = _decode_jwt_payload(token)
+    auth_claim = payload.get("https://api.openai.com/auth")
+    if isinstance(auth_claim, dict):
+        res = auth_claim.get("chatgpt_data_residency") or auth_claim.get("chatgpt_compute_residency")
+        if isinstance(res, str) and res.strip():
+            return res.strip()
+    return None
+
+
 def _call_openai_codex_sse(
     token: str,
     codex_model: str,
@@ -222,8 +233,11 @@ def _call_openai_codex_sse(
     history: list[dict[str, str]],
     user_prompt: str,
 ) -> tuple[str | None, int | None, str | None]:
-    """Call ChatGPT Codex Responses API with SSE streaming and chatgpt-account-id header."""
+    """Call ChatGPT Codex Responses API with SSE streaming and ChatGPT-Account-ID header."""
+    from app.services.oauth_hub import _build_ssl_verify
+
     account_id = _extract_chatgpt_account_id(token)
+    residency = _extract_codex_residency(token)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -232,7 +246,9 @@ def _call_openai_codex_sse(
         "originator": "codex_cli_rs",
     }
     if account_id:
-        headers["chatgpt-account-id"] = account_id
+        headers["ChatGPT-Account-ID"] = account_id
+    if residency:
+        headers["x-openai-internal-codex-residency"] = residency
 
     input_items: list[dict[str, Any]] = []
     for turn in history:
@@ -250,7 +266,7 @@ def _call_openai_codex_sse(
     }
 
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=60.0, verify=_build_ssl_verify()) as client:
             with client.stream("POST", CODEX_RESPONSES_URL, headers=headers, json=payload) as r:
                 if r.status_code != 200:
                     body = r.read().decode("utf-8", errors="replace")
@@ -471,36 +487,68 @@ def call_llm_detailed(
     errors: list[str] = []
     last_failed_provider = ""
 
-    # 1. ChatGPT / OpenAI Codex Subscription OAuth (SSE stream + chatgpt-account-id header)
+    # 1. ChatGPT / OpenAI Codex Subscription OAuth (SSE stream + ChatGPT-Account-ID + live model failover)
     if provider in ("openai-codex", "auto"):
         codex_tok = get_setting(db, "codex_access_token", "").strip()
         if codex_tok:
+            from app.services.oauth_hub import DEFAULT_CODEX_MODELS, RETIRED_CODEX_SLUGS, discover_codex_models
+
             configured_providers.append("openai-codex")
             if _is_jwt_expired(codex_tok):
                 refreshed = _refresh_codex_access_token(db)
                 if refreshed:
                     codex_tok = refreshed
-            codex_model = (
-                model
-                if (
-                    provider == "openai-codex"
-                    and model not in _AUTO_MODEL_PLACEHOLDERS
-                    and "/" not in model
-                    and not model.lower().startswith("gpt-oss")
-                    and ("gpt-" in model.lower() or model.lower().startswith("o"))
+            discovered_codex, codex_is_live = discover_codex_models(codex_tok)
+            codex_candidates: list[str] = []
+            if (
+                provider == "openai-codex"
+                and model not in _AUTO_MODEL_PLACEHOLDERS
+                and "/" not in model
+                and not model.lower().startswith("gpt-oss")
+                and ("gpt-" in model.lower() or model.lower().startswith("o"))
+            ):
+                # Skip retired slugs unless the live per-account catalog explicitly advertised them
+                if model not in RETIRED_CODEX_SLUGS or (codex_is_live and model in discovered_codex):
+                    codex_candidates.append(model)
+            for cand in (*discovered_codex, *DEFAULT_CODEX_MODELS):
+                if cand and cand not in codex_candidates:
+                    codex_candidates.append(cand)
+            codex_candidates = codex_candidates[:6]
+
+            last_codex_model = codex_candidates[0]
+            last_codex_status: int | None = None
+            last_codex_err: str | None = None
+            refreshed_once = False
+            for idx_c, cand_model in enumerate(codex_candidates):
+                last_codex_model = cand_model
+                txt, status, err = _call_openai_codex_sse(codex_tok, cand_model, system_prompt, clean_history, user_prompt)
+                if not txt and status == 401 and not refreshed_once:
+                    refreshed_once = True
+                    refreshed = _refresh_codex_access_token(db)
+                    if refreshed:
+                        codex_tok = refreshed
+                        txt, status, err = _call_openai_codex_sse(codex_tok, cand_model, system_prompt, clean_history, user_prompt)
+                if txt:
+                    if provider == "openai-codex" and idx_c > 0 and model != cand_model:
+                        set_setting(db, "ai_model", cand_model, is_secret=False, category="ai")
+                    return {"text": txt, "provider": f"chatgpt-codex:{cand_model}", "error": None, "configured_providers": configured_providers}
+                last_codex_status = status
+                last_codex_err = err
+                err_low = str(err or "").lower()
+                is_unsupported_model = status == 404 or (
+                    status == 400
+                    and any(
+                        tok in err_low
+                        for tok in ("not supported", "unsupported", "model_not_found", "invalid_model", "does not exist")
+                    )
                 )
-                else "gpt-5.3-codex"
-            )
-            txt, status, err = _call_openai_codex_sse(codex_tok, codex_model, system_prompt, clean_history, user_prompt)
-            if not txt and status == 401:
-                refreshed = _refresh_codex_access_token(db)
-                if refreshed:
-                    txt, status, err = _call_openai_codex_sse(refreshed, codex_model, system_prompt, clean_history, user_prompt)
-            if txt:
-                return {"text": txt, "provider": f"chatgpt-codex:{codex_model}", "error": None, "configured_providers": configured_providers}
+                if is_unsupported_model and idx_c < len(codex_candidates) - 1:
+                    continue
+                break
+
             last_failed_provider = "openai-codex"
-            status_label = f"HTTP {status}" if status else "Network/Stream Error"
-            errors.append(f"ChatGPT Codex ({codex_model}) [{status_label}]: {err}")
+            status_label = f"HTTP {last_codex_status}" if last_codex_status else "Network/Stream Error"
+            errors.append(f"ChatGPT Codex ({last_codex_model}) [{status_label}]: {last_codex_err}")
         elif provider == "openai-codex":
             return {
                 "text": None,
@@ -517,7 +565,7 @@ def call_llm_detailed(
             c_model = (
                 model
                 if (provider == "claude-sub" and model.startswith("claude") and not _AGY_EFFORT_SUFFIX_RE.search(model))
-                else "claude-sonnet-4-5"
+                else "claude-sonnet-4-6"
             )
             try:
                 with httpx.Client(timeout=40.0) as client:
@@ -590,11 +638,11 @@ def call_llm_detailed(
 
     # 4. Cloud API Keys (OpenAI, xAI Grok, OpenRouter, Qwen, MiniMax)
     openai_compat = [
-        ("openai", "openai_api_key", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
-        ("xai_grok", "xai_api_key", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions", "grok-2-latest"),
-        ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/chat/completions", "openai/gpt-4o-mini"),
-        ("qwen", "qwen_api_key", "QWEN_API_KEY", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen-plus"),
-        ("minimax", "minimax_api_key", "MINIMAX_API_KEY", "https://api.minimaxi.chat/v1/text/chatcompletion_v2", "MiniMax-Text-01"),
+        ("openai", "openai_api_key", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions", "gpt-5.4-mini"),
+        ("xai_grok", "xai_api_key", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions", "grok-4.6"),
+        ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/chat/completions", "openai/gpt-5.4-mini"),
+        ("qwen", "qwen_api_key", "QWEN_API_KEY", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen3.7-plus"),
+        ("minimax", "minimax_api_key", "MINIMAX_API_KEY", "https://api.minimaxi.chat/v1/text/chatcompletion_v2", "MiniMax-M3"),
     ]
     _foreign_prefixes: dict[str, tuple[str, ...]] = {
         "openai": ("gemini-", "claude-", "grok-", "qwen", "minimax"),
@@ -650,7 +698,7 @@ def call_llm_detailed(
             anth_model = (
                 model
                 if (provider == "anthropic" and model.startswith("claude") and not _AGY_EFFORT_SUFFIX_RE.search(model))
-                else "claude-3-5-sonnet-latest"
+                else "claude-sonnet-4-6"
             )
             try:
                 with httpx.Client(timeout=35.0) as client:

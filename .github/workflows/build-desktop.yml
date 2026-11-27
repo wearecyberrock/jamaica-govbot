@@ -87,20 +87,19 @@ jobs:
       - name: Publish GitHub Release with Direct Setup.exe Download
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.5.1-alpha
-          name: "Jahtaria Visa Intelligence Alpha v2.5.1 (Model Picker Fix, Instant Sync & Antigravity Disconnect)"
+          tag_name: v2.5.2-alpha
+          name: "Jahtaria Visa Intelligence Alpha v2.5.2 (Live ChatGPT Codex Models, Auto-Failover & Latest Flagships)"
           body: |
-            ## Jahtaria Visa Intelligence Alpha — v2.5.1 (Windows Setup.exe)
+            ## Jahtaria Visa Intelligence Alpha — v2.5.2 (Windows Setup.exe)
 
-            **Zero Python, zero Node.js, zero Docker required.** Run **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.5.1.exe`** right over your existing install — **all your local client records, accounts, custom extensions, and Obsidian vault are preserved automatically.**
+            **Zero Python, zero Node.js, zero Docker required.** Run **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.5.2.exe`** right over your existing install — **all your local client records, accounts, custom extensions, and Obsidian vault are preserved automatically.**
 
-            ### What's Fixed in v2.5.1 Alpha
-            - **Fixed Model Picker Getting Stuck on Antigravity:**
-              - **Instant Model Catalog Sync:** Connecting ChatGPT/Codex, Claude Pro/Max, saving an API key (Gemini, OpenAI, Anthropic, Grok, OpenRouter, Qwen, MiniMax), configuring Ollama, pasting an API key in chat, refreshing live models, or setting a Custom Model ID now updates the chat model dropdown immediately — no more snapping back to Antigravity while Settings is open.
-              - **Clean `★ Auto · Best Flagship` Routing:** Ambient `~/.gemini/` token files on disk no longer hijack `Auto` mode ahead of your configured cloud API keys or Local Ollama.
-              - **Real 1-Click Disconnect Controls:** Added **Disconnect** buttons for Antigravity, ChatGPT/Codex, and Claude Pro/Max inside Settings (plus an Active AI status bar with **Use Auto** and **Test AI**). Disconnecting Antigravity persists cleanly even when `agy.exe` or `~/.gemini/` exists locally and automatically switches active AI back to `Auto`.
-              - **Zero Cross-Provider Model Leakage:** Switching providers via Settings or Smart Paste cleanly resets stale model IDs and eliminates duplicate `★ Auto` dropdown options.
-            - **Includes all v2.5.0 – v2.3.1 Alpha Features:** Safe Self-Evolving Live Extensions Engine, Quiz Builder propagation canvas (`X → Y → Z → A → Output`), 94/6 Documents-First risk engine, Windows SSL certificate store fix, and built-in GitHub Release auto-update popup.
+            ### What's Fixed in v2.5.2 Alpha
+            - **Fixed ChatGPT Codex HTTP 400 Unsupported Model Error (`gpt-5.4` / `gpt-5.3-codex`):**
+              - **Live Per-Account Codex Model Discovery:** Queries `chatgpt.com/backend-api/codex/models` with your `ChatGPT-Account-ID` & residency headers (matching Hermes) so your model picker shows the exact latest models entitled on your ChatGPT account (`gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.5`, etc.) instead of hardcoded retired slugs.
+              - **Automatic Unsupported-Model Migration & Failover:** If an existing install had an older/retired Codex model (`gpt-5.4`, `gpt-5.3-codex`, etc.) saved, the app automatically migrates to your account's top supported Codex model and automatically fails over on HTTP 400/404 model rejections.
+              - **Updated All Provider Flagship Catalogs:** Refreshed live discovery & curated fallbacks for ChatGPT Codex, OpenAI API, Anthropic Claude (`claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-4-6`), xAI Grok (`grok-4.6`), OpenRouter, Qwen (`qwen3.8-max`), and MiniMax (`MiniMax-M3`).
+            - **Includes all v2.5.1 – v2.3.1 Alpha Fixes & Features:** Instant model picker sync, 1-click Disconnect for Antigravity/Codex/Claude, clean `★ Auto` routing, Safe Self-Evolving Live Extensions Engine, Quiz Builder propagation canvas, 94/6 Documents-First risk engine, Windows SSL certificate store fix, and built-in auto-update popup.
           files: |
             desktop/dist/*.exe
             JAHTARIA_ALPHA_USER_GUIDE.md

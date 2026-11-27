@@ -1,4 +1,4 @@
-# Jahtaria Visa Intelligence Alpha (v2.5.1) — Complete User Guide
+# Jahtaria Visa Intelligence Alpha (v2.5.2) — Complete User Guide
 
 Welcome to **Jahtaria Visa Intelligence Alpha**, your standalone Windows desktop platform for **Jamaican U.S. Visa Preparation, Consular Risk Audits, Document Automation, and Autonomous Gmail Outreach** — built specifically around U.S. Embassy Kingston (142 Old Hope Road), PICA, and Jamaican RGD rules.
 
@@ -8,7 +8,7 @@ Welcome to **Jahtaria Visa Intelligence Alpha**, your standalone Windows desktop
 
 ## 1. Installation & First-Time Launch
 
-1. Double-click **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.5.1.exe`** and follow the Windows installer prompts (zero Python, Node.js, or Docker required).
+1. Double-click **`Jahtaria-Visa-Intelligence-Alpha-Setup-2.5.2.exe`** and follow the Windows installer prompts (zero Python, Node.js, or Docker required).
 2. Open **Jahtaria Visa Intelligence Alpha** from your Desktop or Start Menu.
 3. All your client data, encrypted PII (passport numbers & DOBs), uploaded documents, and API keys stay **100% private and encrypted locally** on your PC (`%APPDATA%\jahtaria-visa-desktop\data\`).
 

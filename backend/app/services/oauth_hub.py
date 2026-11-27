@@ -163,15 +163,18 @@ def _codex_poll_worker(flow_id: str) -> None:
                 access_tok = str(token_data.get("access_token") or "")
                 refresh_tok = str(token_data.get("refresh_token") or "")
                 if access_tok:
+                    codex_models, _ = discover_codex_models(access_tok)
+                    default_codex = codex_models[0] if codex_models else DEFAULT_CODEX_MODELS[0]
                     db = SessionLocal()
                     try:
                         set_setting(db, "codex_access_token", access_tok, is_secret=True, category="oauth")
                         if refresh_tok:
                             set_setting(db, "codex_refresh_token", refresh_tok, is_secret=True, category="oauth")
                         set_setting(db, "ai_provider", "openai-codex", is_secret=False, category="ai")
-                        set_setting(db, "ai_model", "gpt-5.3-codex", is_secret=False, category="ai")
+                        set_setting(db, "ai_model", default_codex, is_secret=False, category="ai")
                     finally:
                         db.close()
+                    clear_model_catalog_cache()
                     with _FLOWS_LOCK:
                         if flow_id in _FLOWS:
                             _FLOWS[flow_id]["status"] = "connected"
@@ -586,8 +589,151 @@ def _discover_gemini_models(api_key: str) -> list[str]:
     return _cache_set(ckey, fallback)
 
 
+# Curated ChatGPT Codex OAuth fallback (matches Hermes hermes_cli/codex_models.py).
+# Retired slugs like gpt-5.3-codex / gpt-5.2-codex / gpt-5.2 / gpt-5 / o3 / o4-mini return
+# HTTP 400 "not supported when using Codex with a ChatGPT account", so live discovery from
+# chatgpt.com/backend-api/codex/models?client_version=99.0.0 always takes priority.
+DEFAULT_CODEX_MODELS: list[str] = [
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex-spark",
+]
+
+RETIRED_CODEX_SLUGS: frozenset[str] = frozenset(
+    {
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex",
+        "gpt-5.1",
+        "gpt-5",
+        "o3",
+        "o4-mini",
+    }
+)
+
+
+def _codex_account_headers(access_token: str) -> dict[str, str]:
+    """Build ChatGPT-Account-ID and residency headers from the Codex OAuth JWT."""
+    headers: dict[str, str] = {
+        "User-Agent": CODEX_USER_AGENT,
+        "originator": "codex_cli_rs",
+    }
+    if not access_token or "." not in access_token:
+        return headers
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return headers
+        pad = "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + pad).decode("utf-8"))
+        auth = payload.get("https://api.openai.com/auth") if isinstance(payload, dict) else None
+        if isinstance(auth, dict):
+            acct_id = auth.get("chatgpt_account_id")
+            if isinstance(acct_id, str) and acct_id.strip():
+                headers["ChatGPT-Account-ID"] = acct_id.strip()
+            residency = auth.get("chatgpt_data_residency") or auth.get("chatgpt_compute_residency")
+            if isinstance(residency, str) and residency.strip():
+                headers["x-openai-internal-codex-residency"] = residency.strip()
+        elif isinstance(payload, dict) and isinstance(payload.get("chatgpt_account_id"), str):
+            headers["ChatGPT-Account-ID"] = payload["chatgpt_account_id"].strip()
+    except Exception:
+        pass
+    return headers
+
+
+def _parse_codex_catalog_entries(entries: Any) -> list[str]:
+    """Parse Codex /models entries into visible slugs sorted by (priority, slug)."""
+    if not isinstance(entries, list):
+        return []
+    sortable: list[tuple[int, str]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        visibility = str(item.get("visibility") or "").strip().lower()
+        if visibility in ("hide", "hidden"):
+            continue
+        priority = item.get("priority")
+        rank = int(priority) if isinstance(priority, (int, float)) else 10_000
+        sortable.append((rank, slug.strip()))
+    sortable.sort()
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, slug in sortable:
+        if slug not in seen:
+            seen.add(slug)
+            out.append(slug)
+    return out
+
+
+def discover_codex_models(access_token: str = "") -> tuple[list[str], bool]:
+    """Discover the ChatGPT account's live supported Codex models via /backend-api/codex/models.
+
+    Returns ``(models, from_live_api)`` so callers know whether the list is authoritative for
+    this ChatGPT subscription or a local/curated fallback.
+    """
+    tok = (access_token or "").strip()
+    if tok and tok.count(".") >= 2:
+        ckey = f"codex_live:{hashlib.sha256(tok.encode()).hexdigest()[:10]}"
+        cached = _cache_get(ckey)
+        if cached is not None:
+            return cached, True
+        headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json", **_codex_account_headers(tok)}
+        try:
+            with httpx.Client(timeout=6.0, verify=_build_ssl_verify(), follow_redirects=True) as client:
+                for client_ver in ("99.0.0", "0.0.0"):
+                    r = client.get(f"{CODEX_BASE_URL}/models?client_version={client_ver}", headers=headers)
+                    if r.status_code != 200:
+                        continue
+                    data = r.json()
+                    entries = data.get("models") if isinstance(data, dict) else None
+                    slugs = _parse_codex_catalog_entries(entries)
+                    if slugs:
+                        return _cache_set(ckey, slugs[:20]), True
+        except Exception:
+            pass
+
+    # Local Codex CLI cache fallback (~/.codex/models_cache.json) merged with curated Hermes defaults
+    local_slugs: list[str] = []
+    try:
+        cache_path = Path.home() / ".codex" / "models_cache.json"
+        if cache_path.is_file():
+            raw = json.loads(cache_path.read_text(encoding="utf-8-sig"))
+            local_slugs = _parse_codex_catalog_entries(raw.get("models") if isinstance(raw, dict) else None)
+    except Exception:
+        pass
+
+    merged: list[str] = []
+    for m in (*local_slugs, *DEFAULT_CODEX_MODELS):
+        if m not in merged and m not in RETIRED_CODEX_SLUGS:
+            merged.append(m)
+    return (merged or list(DEFAULT_CODEX_MODELS)), False
+
+
 def _discover_openai_models(api_key: str) -> list[str]:
-    fallback = ["gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
+    fallback = [
+        "gpt-6.2-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "o3",
+        "o4-mini",
+        "gpt-4.1",
+        "gpt-4o",
+    ]
     if not api_key:
         return fallback
     ckey = f"openai:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
@@ -595,19 +741,91 @@ def _discover_openai_models(api_key: str) -> list[str]:
     if cached is not None:
         return cached
     try:
-        with httpx.Client(timeout=4.0) as client:
+        with httpx.Client(timeout=4.0, verify=_build_ssl_verify()) as client:
             r = client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
             if r.status_code == 200:
                 skip = ("audio", "realtime", "tts", "whisper", "dall-e", "embedding", "moderation", "transcribe", "image", "sora")
                 found = [
                     str(m.get("id", "")).strip()
                     for m in r.json().get("data", [])
-                    if str(m.get("id", "")).startswith(("gpt-5", "gpt-4", "o3", "o4", "o1"))
+                    if str(m.get("id", "")).startswith(("gpt-6", "gpt-5", "gpt-4", "o3", "o4", "o1"))
                     and not any(s in str(m.get("id", "")).lower() for s in skip)
                 ]
                 if found:
-                    ranked = _rank_models_flagship_first(found, ["gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-4.1", "gpt-4o"])
+                    ranked = _rank_models_flagship_first(
+                        found,
+                        ["gpt-6.2", "gpt-6.1", "gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4", "o3", "o4-mini", "gpt-4.1", "gpt-4o"],
+                    )
+                    return _cache_set(ckey, ranked[:16])
+    except Exception:
+        pass
+    return _cache_set(ckey, fallback)
+
+
+def _discover_anthropic_models(api_key: str) -> list[str]:
+    fallback = [
+        "claude-fable-5-2",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+    ]
+    if not api_key:
+        return fallback
+    ckey = f"anthropic:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+    try:
+        with httpx.Client(timeout=4.0, verify=_build_ssl_verify()) as client:
+            r = client.get(
+                "https://api.anthropic.com/v1/models",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            )
+            if r.status_code == 200:
+                found = [str(m.get("id", "")).strip() for m in r.json().get("data", []) if str(m.get("id", "")).startswith("claude")]
+                if found:
+                    ranked = _rank_models_flagship_first(
+                        found,
+                        ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+                    )
                     return _cache_set(ckey, ranked[:14])
+    except Exception:
+        pass
+    return _cache_set(ckey, fallback)
+
+
+def _discover_xai_models(api_key: str) -> list[str]:
+    fallback = [
+        "grok-4.6",
+        "grok-4.5",
+        "grok-4.3",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+    ]
+    if not api_key:
+        return fallback
+    ckey = f"xai:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+    try:
+        with httpx.Client(timeout=4.0, verify=_build_ssl_verify()) as client:
+            r = client.get("https://api.x.ai/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+            if r.status_code == 200:
+                skip = ("image", "video", "embed")
+                found = [
+                    str(m.get("id", "")).strip()
+                    for m in r.json().get("data", [])
+                    if str(m.get("id", "")).startswith("grok")
+                    and not any(s in str(m.get("id", "")).lower() for s in skip)
+                ]
+                if found:
+                    ranked = _rank_models_flagship_first(found, ["grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20"])
+                    return _cache_set(ckey, ranked[:12])
     except Exception:
         pass
     return _cache_set(ckey, fallback)
@@ -615,13 +833,13 @@ def _discover_openai_models(api_key: str) -> list[str]:
 
 def _discover_openrouter_models(api_key: str) -> list[str]:
     fallback = [
-        "google/gemini-4-neon",
-        "openai/gpt-5.4",
-        "anthropic/claude-opus-4.6",
-        "anthropic/claude-sonnet-4.6",
-        "x-ai/grok-4",
-        "openai/o3",
-        "google/gemini-3.1-pro-preview",
+        "anthropic/claude-fable-5.2",
+        "anthropic/claude-opus-5.5",
+        "openai/gpt-6.2-sol",
+        "openai/gpt-6-sol",
+        "google/gemini-4-argon",
+        "x-ai/grok-4.7",
+        "deepseek/deepseek-v4-pro",
     ]
     if not api_key:
         return fallback
@@ -630,7 +848,7 @@ def _discover_openrouter_models(api_key: str) -> list[str]:
     if cached is not None:
         return cached
     try:
-        with httpx.Client(timeout=4.0) as client:
+        with httpx.Client(timeout=4.0, verify=_build_ssl_verify()) as client:
             r = client.get("https://openrouter.ai/api/v1/models", headers={"Authorization": f"Bearer {api_key}"})
             if r.status_code == 200:
                 ids = [str(m.get("id", "")).strip() for m in r.json().get("data", []) if m.get("id")]
@@ -638,29 +856,65 @@ def _discover_openrouter_models(api_key: str) -> list[str]:
                     m for m in ids
                     if any(
                         p in m.lower()
-                        for p in ("gemini-4", "gemini-3", "gpt-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4", "claude-sonnet-4", "grok-4", "grok-3", "o3")
+                        for p in (
+                            "gpt-6",
+                            "gpt-5.6",
+                            "gpt-5.5",
+                            "claude-fable",
+                            "claude-opus-5",
+                            "claude-sonnet-5",
+                            "claude-opus-4",
+                            "claude-sonnet-4",
+                            "gemini-4",
+                            "gemini-3",
+                            "grok-4",
+                            "deepseek-v4",
+                            "kimi-k3",
+                            "qwen3.8",
+                            "minimax-m3",
+                        )
                     )
                 ]
                 if wanted:
                     ranked = _rank_models_flagship_first(
                         wanted,
-                        ["google/gemini-4-neon", "openai/gpt-5.4", "anthropic/claude-opus-5", "anthropic/claude-opus-4", "anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4", "x-ai/grok-4", "openai/o3"],
+                        [
+                            "anthropic/claude-fable-5",
+                            "anthropic/claude-opus-5",
+                            "openai/gpt-6.2",
+                            "openai/gpt-6",
+                            "google/gemini-4",
+                            "x-ai/grok-4.7",
+                            "x-ai/grok-4.6",
+                            "deepseek/deepseek-v4",
+                            "openai/gpt-5.5",
+                        ],
                     )
-                    return _cache_set(ckey, ranked[:14])
+                    return _cache_set(ckey, ranked[:16])
     except Exception:
         pass
     return _cache_set(ckey, fallback)
 
 
 def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
-    from app.services.hermes_engine import find_antigravity_bin, is_antigravity_disabled
+    from app.services.hermes_engine import (
+        _is_jwt_expired,
+        _refresh_codex_access_token,
+        find_antigravity_bin,
+        is_antigravity_disabled,
+    )
 
     active_provider = (get_setting(db, "ai_provider", "auto") or "auto").strip().lower() or "auto"
     active_model = (get_setting(db, "ai_model", "auto-flagship") or "").strip()
 
     agy_bin = find_antigravity_bin()
     agy_disabled = is_antigravity_disabled(db)
-    codex_connected = bool(get_setting(db, "codex_access_token", ""))
+    codex_tok = get_setting(db, "codex_access_token", "").strip()
+    if codex_tok and _is_jwt_expired(codex_tok):
+        refreshed = _refresh_codex_access_token(db)
+        if refreshed:
+            codex_tok = refreshed
+    codex_connected = bool(codex_tok)
     claude_sub_connected = bool(get_setting(db, "claude_oauth_token", "")) or bool(os.getenv("CLAUDE_CODE_OAUTH_TOKEN"))
     agy_connected = (not agy_disabled) and (
         bool(get_setting(db, "antigravity_access_token", ""))
@@ -687,9 +941,12 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
     qwen_key = get_setting(db, "qwen_api_key", os.getenv("QWEN_API_KEY", ""))
     minimax_key = get_setting(db, "minimax_api_key", os.getenv("MINIMAX_API_KEY", ""))
 
+    codex_models, codex_is_live = discover_codex_models(codex_tok)
     agy_models = _discover_agy_models("" if agy_disabled else (agy_bin or ""))
     gemini_models = _discover_gemini_models(gem_key)
     openai_models = _discover_openai_models(openai_key)
+    anthropic_models = _discover_anthropic_models(anth_key)
+    xai_models = _discover_xai_models(xai_key)
     openrouter_models = _discover_openrouter_models(or_key)
 
     groups = [
@@ -704,25 +961,33 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
                     "models": ["auto-flagship"],
                 },
                 {
-                    "provider": "antigravity",
-                    "label": "Antigravity (Live Catalog)",
-                    "connected": agy_connected,
-                    "auth_kind": "google_oauth",
-                    "models": agy_models,
-                },
-                {
                     "provider": "openai-codex",
                     "label": "ChatGPT / Codex Subscription",
                     "connected": codex_connected,
                     "auth_kind": "oauth_device",
-                    "models": ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5", "o3", "o4-mini"],
+                    "models": codex_models,
                 },
                 {
                     "provider": "claude-sub",
                     "label": "Claude Pro / Max Subscription",
                     "connected": claude_sub_connected,
                     "auth_kind": "claude_token",
-                    "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-5", "claude-sonnet-4-5"],
+                    "models": [
+                        "claude-fable-5-2",
+                        "claude-opus-5-5",
+                        "claude-opus-5",
+                        "claude-sonnet-5",
+                        "claude-opus-4-8",
+                        "claude-opus-4-6",
+                        "claude-sonnet-4-6",
+                    ],
+                },
+                {
+                    "provider": "antigravity",
+                    "label": "Antigravity (Live Catalog)",
+                    "connected": agy_connected,
+                    "auth_kind": "google_oauth",
+                    "models": agy_models,
                 },
             ],
         },
@@ -731,17 +996,11 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
             "items": [
                 {"provider": "gemini", "label": "Google Gemini API", "connected": bool(gem_key), "auth_kind": "api_key", "models": gemini_models},
                 {"provider": "openai", "label": "OpenAI API", "connected": bool(openai_key), "auth_kind": "api_key", "models": openai_models},
-                {
-                    "provider": "anthropic",
-                    "label": "Anthropic Claude API",
-                    "connected": bool(anth_key),
-                    "auth_kind": "api_key",
-                    "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
-                },
-                {"provider": "xai_grok", "label": "xAI Grok (SuperGrok / API)", "connected": bool(xai_key), "auth_kind": "api_key", "models": ["grok-4", "grok-3", "grok-3-mini", "grok-2-latest"]},
+                {"provider": "anthropic", "label": "Anthropic Claude API", "connected": bool(anth_key), "auth_kind": "api_key", "models": anthropic_models},
+                {"provider": "xai_grok", "label": "xAI Grok (SuperGrok / API)", "connected": bool(xai_key), "auth_kind": "api_key", "models": xai_models},
                 {"provider": "openrouter", "label": "OpenRouter (All Flagships)", "connected": bool(or_key), "auth_kind": "api_key", "models": openrouter_models},
-                {"provider": "qwen", "label": "Qwen (DashScope / OAuth)", "connected": bool(qwen_key), "auth_kind": "api_key", "models": ["qwen3-max", "qwen-max", "qwen-plus"]},
-                {"provider": "minimax", "label": "MiniMax", "connected": bool(minimax_key), "auth_kind": "api_key", "models": ["MiniMax-M1", "MiniMax-Text-01"]},
+                {"provider": "qwen", "label": "Qwen (DashScope / OAuth)", "connected": bool(qwen_key), "auth_kind": "api_key", "models": ["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen-max", "qwen-plus"]},
+                {"provider": "minimax", "label": "MiniMax", "connected": bool(minimax_key), "auth_kind": "api_key", "models": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-Text-01"]},
             ],
         },
         {
@@ -758,14 +1017,20 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
         },
     ]
 
-    # Normalize active_provider & active_model cleanly (avoid duplicate Auto options and preserve custom model IDs)
+    # Normalize active_provider & active_model cleanly (avoid duplicate Auto options and auto-migrate retired Codex slugs)
     all_items = [it for grp in groups for it in grp["items"]]
     active_item = next((it for it in all_items if it["provider"] == active_provider), None)
     if not active_item or active_provider == "auto":
         active_provider = "auto"
         active_model = "auto-flagship"
     elif active_item.get("models"):
-        if not active_model or active_model in ("consular-auto", "auto-flagship", "auto"):
+        if active_provider == "openai-codex" and (
+            active_model in RETIRED_CODEX_SLUGS
+            or (codex_is_live and active_model and active_model not in active_item["models"])
+        ):
+            active_model = active_item["models"][0]
+            set_setting(db, "ai_model", active_model, is_secret=False, category="ai")
+        elif not active_model or active_model in ("consular-auto", "auto-flagship", "auto"):
             active_model = active_item["models"][0]
         elif active_model not in active_item["models"]:
             # Keep user's custom model ID visible at the top of that provider's list
@@ -776,6 +1041,7 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
         "active_model": active_model,
         "agy_cli_installed": bool(agy_bin),
         "agy_disabled": agy_disabled,
+        "codex_live_discovered": codex_is_live,
         "claude_cli_installed": bool(shutil.which("claude")),
         "groups": groups,
     }
