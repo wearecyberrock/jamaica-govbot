@@ -56,8 +56,8 @@ class BrandingUpdateRequest(BaseModel):
 
 
 class AiProviderConfigRequest(BaseModel):
-    ai_provider: str = "auto"  # auto | antigravity | ollama | openai | anthropic | gemini | xai_grok | openrouter
-    ai_model: str = ""
+    ai_provider: str = "auto"  # auto | antigravity | ollama | openai | anthropic | gemini | xai_grok | openrouter | qwen | minimax
+    ai_model: str | None = None
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     openai_api_key: str | None = None
@@ -65,6 +65,8 @@ class AiProviderConfigRequest(BaseModel):
     gemini_api_key: str | None = None
     xai_api_key: str | None = None
     openrouter_api_key: str | None = None
+    qwen_api_key: str | None = None
+    minimax_api_key: str | None = None
 
 
 class ComposioConfigRequest(BaseModel):
@@ -268,17 +270,45 @@ def save_ai_provider(
     _user: User = Depends(require_roles("ceo", "staff")),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    set_setting(db, "ai_provider", req.ai_provider, is_secret=False, category="ai")
-    set_setting(db, "ai_model", req.ai_model, is_secret=False, category="ai")
+    from app.services.oauth_hub import clear_model_catalog_cache, get_grouped_model_catalog
+
+    prev_provider = (get_setting(db, "ai_provider", "auto") or "auto").strip().lower() or "auto"
+    new_provider = (req.ai_provider or "auto").strip().lower() or "auto"
+
+    set_setting(db, "ai_provider", new_provider, is_secret=False, category="ai")
+    if new_provider == "antigravity":
+        set_setting(db, "antigravity_disabled", "", is_secret=False, category="oauth")
+
+    if req.ai_model is not None and req.ai_model.strip():
+        set_setting(db, "ai_model", req.ai_model.strip(), is_secret=False, category="ai")
+    elif new_provider == "auto":
+        set_setting(db, "ai_model", "auto-flagship", is_secret=False, category="ai")
+    elif new_provider != prev_provider:
+        # Reset stale model ID from previous provider so catalog selects the new provider's flagship
+        set_setting(db, "ai_model", "", is_secret=False, category="ai")
+
     set_setting(db, "ollama_base_url", req.ollama_base_url, is_secret=False, category="ai")
     set_setting(db, "ollama_model", req.ollama_model, is_secret=False, category="ai")
 
-    for field_name in ("openai_api_key", "anthropic_api_key", "gemini_api_key", "xai_api_key", "openrouter_api_key"):
+    for field_name in (
+        "openai_api_key",
+        "anthropic_api_key",
+        "gemini_api_key",
+        "xai_api_key",
+        "openrouter_api_key",
+        "qwen_api_key",
+        "minimax_api_key",
+    ):
         val = getattr(req, field_name)
         if val is not None and val.strip() and "•" not in val:
             set_setting(db, field_name, val.strip(), is_secret=True, category="ai")
 
-    return {"saved": True, "providers": detect_available_providers(db)}
+    clear_model_catalog_cache()
+    return {
+        "saved": True,
+        "providers": detect_available_providers(db),
+        "catalog": get_grouped_model_catalog(db),
+    }
 
 
 @router.post("/api/settings/test-ai")

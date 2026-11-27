@@ -607,5 +607,114 @@ def test_v250_live_extensions_self_evolution():
         assert client.get(f"/api/extensions/{slug}", headers=h).status_code == 404
 
 
+def test_v251_model_selection_and_antigravity_disconnect(monkeypatch):
+    """Verify v2.5.1: model selection never sticks on Antigravity, disconnect works even with local agy, and auto respects API keys."""
+    from fastapi.testclient import TestClient
+
+    from app.database import SessionLocal
+    from app.main import app
+    from app.services import hermes_engine, oauth_hub
+    from app.services.connectors import set_setting
+
+    # Simulate a PC that has local Antigravity `agy` binary installed
+    monkeypatch.setattr(hermes_engine, "find_antigravity_bin", lambda: "/usr/local/bin/agy")
+
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "testaccount", "password": "testpassword"})
+        if login.status_code != 200:
+            login = client.post("/api/auth/login", json={"username": "testaccount", "password": "newpassword123"})
+        assert login.status_code == 200, login.text
+        h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        # 1. Select Antigravity explicitly
+        sel_agy = client.post("/api/models/select", headers=h, json={"provider": "antigravity", "model": "gemini-4-neon-high"})
+        assert sel_agy.status_code == 200
+        cat_agy = sel_agy.json()
+        assert cat_agy["active_provider"] == "antigravity"
+        assert cat_agy["active_model"] == "gemini-4-neon-high"
+        agy_item = next(i for g in cat_agy["groups"] for i in g["items"] if i["provider"] == "antigravity")
+        assert agy_item["connected"] is True
+
+        # 2. Disconnect Antigravity -> MUST mark connected=False even though local agy binary exists & reset active_provider to auto
+        disc = client.post("/api/oauth/disconnect", headers=h, json={"provider": "antigravity"})
+        assert disc.status_code == 200
+        cat_disc = disc.json()["catalog"]
+        assert cat_disc["active_provider"] == "auto"
+        assert cat_disc["active_model"] == "auto-flagship"
+        auto_item = next(i for g in cat_disc["groups"] for i in g["items"] if i["provider"] == "auto")
+        assert auto_item["models"] == ["auto-flagship"]  # no duplicate Auto options!
+        agy_item_after = next(i for g in cat_disc["groups"] for i in g["items"] if i["provider"] == "antigravity")
+        assert agy_item_after["connected"] is False
+
+        # 3. Switch back to Antigravity then save an OpenAI API key via /api/settings/ai-provider (omitting ai_model)
+        client.post("/api/models/select", headers=h, json={"provider": "antigravity", "model": "gemini-3.8-flash-medium"})
+        save_oai = client.post(
+            "/api/settings/ai-provider",
+            headers=h,
+            json={"ai_provider": "openai", "openai_api_key": "sk-test-fake-openai-key-1234567890abcdef"},
+        )
+        assert save_oai.status_code == 200
+        cat_oai = save_oai.json()["catalog"]
+        assert cat_oai["active_provider"] == "openai"
+        # Must NOT leak Antigravity's gemini-3.8-flash-medium into OpenAI!
+        assert "gemini" not in cat_oai["active_model"].lower()
+        oai_item = next(i for g in cat_oai["groups"] for i in g["items"] if i["provider"] == "openai")
+        assert oai_item["connected"] is True
+
+        # 4. Select a specific OpenAI model & verify persistence via /api/models/catalog
+        sel_oai = client.post("/api/models/select", headers=h, json={"provider": "openai", "model": "gpt-5.4"})
+        assert sel_oai.status_code == 200
+        assert sel_oai.json()["active_provider"] == "openai"
+        assert sel_oai.json()["active_model"] == "gpt-5.4"
+
+        # 5. In `auto` mode, configured OpenAI API key MUST be preferred ahead of Antigravity
+        client.post("/api/models/select", headers=h, json={"provider": "auto", "model": "auto-flagship"})
+        called_urls: list[str] = []
+
+        class _FakeResp:
+            status_code = 200
+            text = '{"choices":[{"message":{"content":"OpenAI handled auto mode."}}]}'
+
+            def json(self):
+                return {"choices": [{"message": {"content": "OpenAI handled auto mode."}}]}
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def post(self, url, **kwargs):
+                called_urls.append(url)
+                if "localhost:11434" in url:
+                    raise RuntimeError("ollama offline")
+                return _FakeResp()
+
+        monkeypatch.setattr(hermes_engine.httpx, "Client", _FakeClient)
+        db = SessionLocal()
+        try:
+            set_setting(db, "codex_access_token", "", is_secret=True, category="oauth")
+            set_setting(db, "claude_oauth_token", "", is_secret=True, category="oauth")
+            set_setting(db, "antigravity_access_token", "ya29.fake_db_token", is_secret=True, category="oauth")
+            set_setting(db, "antigravity_disabled", "", is_secret=False, category="oauth")
+            res = hermes_engine.call_llm_detailed(db, "sys", "hello")
+            assert res["text"] == "OpenAI handled auto mode."
+            assert res["provider"].startswith("openai:")
+            assert any("api.openai.com" in u for u in called_urls)
+        finally:
+            # Clean up test settings so other tests remain hermetic
+            set_setting(db, "openai_api_key", "", is_secret=True, category="ai")
+            set_setting(db, "antigravity_access_token", "", is_secret=True, category="oauth")
+            set_setting(db, "antigravity_disabled", "", is_secret=False, category="oauth")
+            set_setting(db, "ai_provider", "auto", is_secret=False, category="ai")
+            set_setting(db, "ai_model", "auto-flagship", is_secret=False, category="ai")
+            oauth_hub.clear_model_catalog_cache()
+            db.close()
+
+
 
 

@@ -2,6 +2,12 @@
 
 A commercial, white-labelable **Desktop-first** (and VPS/Docker-ready) AI U.S. Visa Preparation, Good Standing Risk Engine, Official PDF/Blueprint Automation, and Consular Interview Intelligence platform built for Jamaican travel & visa agencies.
 
+## Download Windows Installer (Zero Setup Required)
+- **Latest Alpha (`v2.5.1-alpha`):** [Download `Jahtaria-Visa-Intelligence-Alpha-Setup-2.5.1.exe`](https://github.com/wearecyberrock/jamaica-govbot/releases/tag/v2.5.1-alpha)
+- **All Releases:** [github.com/wearecyberrock/jamaica-govbot/releases](https://github.com/wearecyberrock/jamaica-govbot/releases)
+
+*(Existing Alpha v2.3.1+ installs automatically prompt to download the new `Setup.exe` right over your current install while preserving all local client data, accounts, and your Obsidian vault.)*
+
 ---
 
 ## Quick Start (Desktop — Zero Docker Required)

@@ -189,7 +189,7 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   // Grouped Model Catalog (loaded from /api/models/catalog — zero "Hermes" mention!)
   const [modelCatalog, setModelCatalog] = useState<any>(null);
   const [activeProvider, setActiveProvider] = useState("auto");
-  const [activeModel, setActiveModel] = useState("consular-auto");
+  const [activeModel, setActiveModel] = useState("auto-flagship");
 
   // Voice Mode (available to CEO, Staff & Customers!)
   const [voiceMode, setVoiceMode] = useState(false);
@@ -224,13 +224,16 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
     apiFetch<SavedConv[]>("/api/conversations").then(setConversations).catch(() => {});
   };
 
+  const applyModelCatalog = (cat: any) => {
+    if (!cat || typeof cat !== "object") return;
+    setModelCatalog(cat);
+    setActiveProvider(cat.active_provider || "auto");
+    setActiveModel(cat.active_model || "auto-flagship");
+  };
+
   const loadModelCatalog = () => {
     apiFetch<any>("/api/models/catalog")
-      .then((cat) => {
-        setModelCatalog(cat);
-        setActiveProvider(cat.active_provider || "auto");
-        setActiveModel(cat.active_model || "consular-auto");
-      })
+      .then(applyModelCatalog)
       .catch(() => {});
   };
 
@@ -418,19 +421,34 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
   };
 
   const handleModelSwitch = async (combined: string) => {
-    const [prov, mdl] = combined.split("::");
+    const idx = combined.indexOf("::");
+    if (idx <= 0) return;
+    const prov = combined.slice(0, idx);
+    const mdl = combined.slice(idx + 2);
     if (!prov || !mdl) return;
-    // Check if subscription is connected — if not, immediately open Settings Sign-In card!
+    // Check if subscription / key is connected — if not, immediately open Settings Sign-In card preselected to this provider!
     const allItems = (modelCatalog?.groups || []).flatMap((g: any) => g.items || []);
     const item = allItems.find((i: any) => i.provider === prov);
     if (item && !item.connected && prov !== "auto") {
-      openPanel({ panel: "settings", title: `Connect ${item.label}` });
+      openPanel({ panel: "settings", subview: prov, title: `Connect ${item.label}` });
       return;
     }
+    const prevProv = activeProvider;
+    const prevMdl = activeModel;
     setActiveProvider(prov);
     setActiveModel(mdl);
-    if (user?.role === "ceo" || user?.role === "staff") {
-      await apiFetch("/api/models/select", { method: "POST", body: JSON.stringify({ provider: prov, model: mdl }) });
+    if (user?.role === "ceo" || user?.role === "staff" || user?.all_tiers) {
+      try {
+        const updated = await apiFetch<any>("/api/models/select", {
+          method: "POST",
+          body: JSON.stringify({ provider: prov, model: mdl }),
+        });
+        applyModelCatalog(updated);
+      } catch {
+        setActiveProvider(prevProv);
+        setActiveModel(prevMdl);
+        loadModelCatalog();
+      }
     }
   };
 
@@ -472,6 +490,9 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
         openPanel(res.ui_panel);
         if (res.ui_panel.case_id) setActiveCaseId(res.ui_panel.case_id);
       }
+      if (res.provider_used === "smart-paste-engine" || res.ui_panel?.panel === "settings") {
+        loadModelCatalog();
+      }
       setPanelRefreshNonce((n) => n + 1);
 
       setTurns((prev) => [
@@ -511,6 +532,9 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
     setPanelRefreshNonce((n) => n + 1);
     if (updated.action_type === "update_branding") {
       fetch("/api/branding").then((r) => r.json()).then(setBranding).catch(() => {});
+    }
+    if (updated.action_type === "update_setting") {
+      loadModelCatalog();
     }
   };
 
@@ -1387,6 +1411,10 @@ export function AgentWorkspace({ requiredRole }: { requiredRole?: "ceo" | "staff
               setBranding(b);
               loadModelCatalog();
             }}
+            onModelsChanged={(cat) => {
+              if (cat) applyModelCatalog(cat);
+              else loadModelCatalog();
+            }}
             onClose={() => {
               setRightPanel(null);
               setRightExpanded(false);
@@ -1637,42 +1665,56 @@ function PromptPill({
         />
 
         {/* Grouped Model Picker (Subscriptions / Local / API Keys) */}
-        <div className="hidden sm:flex items-center relative max-w-[210px] shrink-0">
+        <div className="flex items-center relative max-w-[170px] sm:max-w-[220px] shrink-0">
           {(() => {
             const flatItems = (modelCatalog?.groups || []).flatMap((g: any) => g.items || []);
             const provItem = flatItems.find((i: any) => i.provider === activeProvider);
+            const effectiveProvider = provItem ? activeProvider : "auto";
             const effectiveModel =
               provItem && Array.isArray(provItem.models) && provItem.models.length > 0
                 ? provItem.models.includes(activeModel)
                   ? activeModel
                   : provItem.models[0]
-                : activeModel;
-            const selectVal = `${activeProvider}::${effectiveModel}`;
+                : "auto-flagship";
+            const selectVal = `${effectiveProvider}::${effectiveModel}`;
+            if (!isStaffOrCeo) {
+              return (
+                <span
+                  className="text-xs text-slate-400 px-2 py-1 truncate max-w-[170px] sm:max-w-[220px]"
+                  title={`Active AI: ${effectiveProvider} / ${effectiveModel}`}
+                >
+                  {effectiveProvider === "auto" ? "★ Auto" : `${effectiveProvider} · ${effectiveModel}`}
+                </span>
+              );
+            }
             return (
-              <select
-                value={selectVal}
-                onChange={(e) => onSelectModel(e.target.value)}
-                className="appearance-none bg-transparent text-xs text-slate-300 hover:text-white pr-5 pl-1.5 py-1 outline-none cursor-pointer truncate max-w-[210px]"
-                title={`Active AI: ${activeProvider} / ${effectiveModel}`}
-              >
-                {(modelCatalog?.groups || []).map((g: any) => (
-                  <optgroup key={g.group} label={g.group} className="bg-[#111318] text-slate-400">
-                    {g.items.map((item: any) =>
-                      item.models.map((m: string) => (
-                        <option key={`${item.provider}::${m}`} value={`${item.provider}::${m}`} className="bg-[#171a21] text-slate-100">
-                          {item.provider === "auto"
-                            ? "★ Auto · Best Flagship"
-                            : `${item.connected ? "● " : "○ "}${item.label.split(" ")[0]} · ${m}`}
-                        </option>
-                      ))
-                    )}
-                  </optgroup>
-                ))}
-                {!modelCatalog && <option value="auto::auto-flagship">★ Auto · Best Flagship</option>}
-              </select>
+              <>
+                <select
+                  aria-label="Active AI Model"
+                  value={selectVal}
+                  onChange={(e) => onSelectModel(e.target.value)}
+                  className="appearance-none bg-transparent text-xs text-slate-300 hover:text-white pr-5 pl-1.5 py-1 outline-none cursor-pointer truncate max-w-[170px] sm:max-w-[220px]"
+                  title={`Active AI: ${effectiveProvider} / ${effectiveModel}`}
+                >
+                  {(modelCatalog?.groups || []).map((g: any) => (
+                    <optgroup key={g.group} label={g.group} className="bg-[#111318] text-slate-400">
+                      {g.items.map((item: any) =>
+                        Array.from(new Set<string>(item.models || [])).map((m: string) => (
+                          <option key={`${item.provider}::${m}`} value={`${item.provider}::${m}`} className="bg-[#171a21] text-slate-100">
+                            {item.provider === "auto"
+                              ? "★ Auto · Best Flagship"
+                              : `${item.connected ? "● " : "○ "}${item.label.split(" ")[0]} · ${m}`}
+                          </option>
+                        ))
+                      )}
+                    </optgroup>
+                  ))}
+                  {!modelCatalog && <option value="auto::auto-flagship">★ Auto · Best Flagship</option>}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-500 pointer-events-none -ml-4 shrink-0" />
+              </>
             );
           })()}
-          <ChevronDown className="w-3.5 h-3.5 text-slate-500 pointer-events-none -ml-4 shrink-0" />
         </div>
 
         {/* Live Voice Mic Button */}

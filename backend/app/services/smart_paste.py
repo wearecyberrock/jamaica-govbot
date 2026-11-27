@@ -120,16 +120,25 @@ def detect_and_apply_smart_paste(db: Session, user: User, msg: str) -> dict[str,
             raw_key = m.group(1)
             old_key = get_setting(db, setting_key, "")
             old_prov = get_setting(db, "ai_provider", "auto")
+            old_model = get_setting(db, "ai_model", "")
             set_setting(db, setting_key, raw_key, is_secret=True, category="ai")
             set_setting(db, "ai_provider", prov_id, is_secret=False, category="ai")
+            if old_prov != prov_id:
+                set_setting(db, "ai_model", "", is_secret=False, category="ai")
+            try:
+                from app.services.oauth_hub import clear_model_catalog_cache
+
+                clear_model_catalog_cache()
+            except Exception:
+                pass
             redacted = text.replace(raw_key, mask_secret(raw_key))
             act = PendingAction(
                 user_id=user.id,
                 action_type="update_setting",
                 target_ref=prov_id,
                 summary=f"Auto-connected {label} ({mask_secret(raw_key)}) & activated provider",
-                before_json=json.dumps({setting_key: old_key, "ai_provider": old_prov}),
-                after_json=json.dumps({setting_key: raw_key, "ai_provider": prov_id}),
+                before_json=json.dumps({setting_key: old_key, "ai_provider": old_prov, "ai_model": old_model}),
+                after_json=json.dumps({setting_key: raw_key, "ai_provider": prov_id, "ai_model": "" if old_prov != prov_id else old_model}),
                 status="applied",
             )
             db.add(act)

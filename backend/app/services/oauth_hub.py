@@ -305,11 +305,12 @@ def exchange_antigravity_code(db: Session, flow_id: str, raw_code_or_url: str) -
             return {"ok": False, "error": "No access token returned by Google."}
 
     # Persist both in encrypted DB and in standard ~/.gemini/antigravity-cli path for `agy`
+    set_setting(db, "antigravity_disabled", "", is_secret=False, category="oauth")
     set_setting(db, "antigravity_access_token", access_tok, is_secret=True, category="oauth")
     if refresh_tok:
         set_setting(db, "antigravity_refresh_token", refresh_tok, is_secret=True, category="oauth")
     set_setting(db, "ai_provider", "antigravity", is_secret=False, category="ai")
-    set_setting(db, "ai_model", "gemini-3.8-flash-medium", is_secret=False, category="ai")
+    set_setting(db, "ai_model", "gemini-4-neon-high", is_secret=False, category="ai")
 
     try:
         tok_path = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
@@ -405,6 +406,7 @@ def import_local_subscription_tokens(db: Session) -> dict[str, Any]:
                 tok = (tok_obj.get("access_token") or "").strip()
                 ref = (tok_obj.get("refresh_token") or "").strip()
                 if tok:
+                    set_setting(db, "antigravity_disabled", "", is_secret=False, category="oauth")
                     set_setting(db, "antigravity_access_token", tok, is_secret=True, category="oauth")
                     if ref:
                         set_setting(db, "antigravity_refresh_token", ref, is_secret=True, category="oauth")
@@ -414,6 +416,7 @@ def import_local_subscription_tokens(db: Session) -> dict[str, Any]:
             except Exception:
                 pass
     if not agy_imported and find_antigravity_bin():
+        set_setting(db, "antigravity_disabled", "", is_secret=False, category="oauth")
         imported.append("antigravity")
 
     return {"imported": imported, "count": len(imported)}
@@ -483,7 +486,7 @@ def _discover_agy_models(agy_bin: str) -> list[str]:
     if not agy_bin:
         return fallback
     try:
-        kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": 8, "encoding": "utf-8", "errors": "replace"}
+        kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": 4, "encoding": "utf-8", "errors": "replace"}
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         proc = subprocess.run([agy_bin, "models"], **kwargs)
@@ -650,15 +653,16 @@ def _discover_openrouter_models(api_key: str) -> list[str]:
 
 
 def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
-    from app.services.hermes_engine import find_antigravity_bin
+    from app.services.hermes_engine import find_antigravity_bin, is_antigravity_disabled
 
-    active_provider = get_setting(db, "ai_provider", "auto")
-    active_model = get_setting(db, "ai_model", "auto-flagship")
+    active_provider = (get_setting(db, "ai_provider", "auto") or "auto").strip().lower() or "auto"
+    active_model = (get_setting(db, "ai_model", "auto-flagship") or "").strip()
 
     agy_bin = find_antigravity_bin()
+    agy_disabled = is_antigravity_disabled(db)
     codex_connected = bool(get_setting(db, "codex_access_token", ""))
     claude_sub_connected = bool(get_setting(db, "claude_oauth_token", "")) or bool(os.getenv("CLAUDE_CODE_OAUTH_TOKEN"))
-    agy_connected = (
+    agy_connected = (not agy_disabled) and (
         bool(get_setting(db, "antigravity_access_token", ""))
         or (Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
         or (Path.home() / ".gemini" / "oauth_creds.json").exists()
@@ -680,10 +684,10 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
     gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
     xai_key = get_setting(db, "xai_api_key", os.getenv("XAI_API_KEY", ""))
     or_key = get_setting(db, "openrouter_api_key", os.getenv("OPENROUTER_API_KEY", ""))
-    qwen_key = get_setting(db, "qwen_api_key", "")
-    minimax_key = get_setting(db, "minimax_api_key", "")
+    qwen_key = get_setting(db, "qwen_api_key", os.getenv("QWEN_API_KEY", ""))
+    minimax_key = get_setting(db, "minimax_api_key", os.getenv("MINIMAX_API_KEY", ""))
 
-    agy_models = _discover_agy_models(agy_bin or "")
+    agy_models = _discover_agy_models("" if agy_disabled else (agy_bin or ""))
     gemini_models = _discover_gemini_models(gem_key)
     openai_models = _discover_openai_models(openai_key)
     openrouter_models = _discover_openrouter_models(or_key)
@@ -754,22 +758,24 @@ def get_grouped_model_catalog(db: Session) -> dict[str, Any]:
         },
     ]
 
-    # Preserve custom model IDs if the user typed one manually, while normalizing legacy 'consular-auto'
+    # Normalize active_provider & active_model cleanly (avoid duplicate Auto options and preserve custom model IDs)
     all_items = [it for grp in groups for it in grp["items"]]
     active_item = next((it for it in all_items if it["provider"] == active_provider), None)
-    if active_item and active_item.get("models"):
-        if not active_model or active_model == "consular-auto":
+    if not active_item or active_provider == "auto":
+        active_provider = "auto"
+        active_model = "auto-flagship"
+    elif active_item.get("models"):
+        if not active_model or active_model in ("consular-auto", "auto-flagship", "auto"):
             active_model = active_item["models"][0]
         elif active_model not in active_item["models"]:
             # Keep user's custom model ID visible at the top of that provider's list
             active_item["models"] = [active_model] + active_item["models"]
-    elif not active_model or active_model == "consular-auto":
-        active_model = "auto-flagship"
 
     return {
         "active_provider": active_provider,
         "active_model": active_model,
         "agy_cli_installed": bool(agy_bin),
+        "agy_disabled": agy_disabled,
         "claude_cli_installed": bool(shutil.which("claude")),
         "groups": groups,
     }

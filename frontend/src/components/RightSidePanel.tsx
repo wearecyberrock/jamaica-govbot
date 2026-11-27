@@ -89,6 +89,7 @@ interface RightSidePanelProps {
   onOpenQuizBuilder?: (caseId: string) => void;
   onExtensionsChanged?: () => void;
   onBrandingUpdated: (b: BrandingConfig) => void;
+  onModelsChanged?: (catalog?: any) => void;
   onClose: () => void;
 }
 
@@ -108,6 +109,7 @@ export function RightSidePanel({
   onOpenQuizBuilder,
   onExtensionsChanged,
   onBrandingUpdated,
+  onModelsChanged,
   onClose,
 }: RightSidePanelProps) {
   const isCeo = user.role === "ceo";
@@ -257,7 +259,13 @@ export function RightSidePanel({
         )}
         {request.panel === "team" && isCeo && <TeamSubPanel />}
         {request.panel === "settings" && isStaffOrCeo && (
-          <SettingsSubPanel isCeo={isCeo} branding={branding} onBrandingUpdated={onBrandingUpdated} />
+          <SettingsSubPanel
+            isCeo={isCeo}
+            branding={branding}
+            initialProvider={request.subview}
+            onBrandingUpdated={onBrandingUpdated}
+            onModelsChanged={onModelsChanged}
+          />
         )}
       </div>
     </aside>
@@ -1923,14 +1931,32 @@ function TeamSubPanel() {
 }
 
 /* ── 9. REAL SUBSCRIPTION OAUTH, VOICE STUDIO, COMPOSIO, MCP & WHITE-LABEL ─── */
+const SETTINGS_API_PROVIDERS = new Set([
+  "auto",
+  "gemini",
+  "antigravity",
+  "openai-codex",
+  "openai",
+  "anthropic",
+  "xai_grok",
+  "openrouter",
+  "qwen",
+  "minimax",
+  "ollama",
+]);
+
 function SettingsSubPanel({
   isCeo,
   branding,
+  initialProvider,
   onBrandingUpdated,
+  onModelsChanged,
 }: {
   isCeo: boolean;
   branding: BrandingConfig | null;
+  initialProvider?: string;
   onBrandingUpdated: (b: BrandingConfig) => void;
+  onModelsChanged?: (catalog?: any) => void;
 }) {
   const [catalog, setCatalog] = useState<any>(null);
   const [hub, setHub] = useState<any>(null);
@@ -1944,9 +1970,12 @@ function SettingsSubPanel({
   const [showClaudeBox, setShowClaudeBox] = useState(false);
   const [customModelId, setCustomModelId] = useState("");
   const [refreshingModels, setRefreshingModels] = useState(false);
+  const [testingAi, setTestingAi] = useState(false);
 
   // API key & ClawLink / Composio quick save
-  const [apiProv, setApiProv] = useState("gemini");
+  const [apiProv, setApiProv] = useState(
+    initialProvider && SETTINGS_API_PROVIDERS.has(initialProvider) ? initialProvider : "gemini"
+  );
   const [apiKeyVal, setApiKeyVal] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
   const [composioKeyInput, setComposioKeyInput] = useState("");
@@ -1966,7 +1995,13 @@ function SettingsSubPanel({
   const [agencyName, setAgencyName] = useState(branding?.agency_name || "Jahtaria Travel Services");
   const [status, setStatus] = useState("");
 
-  const loadAll = async () => {
+  useEffect(() => {
+    if (initialProvider && SETTINGS_API_PROVIDERS.has(initialProvider)) {
+      setApiProv(initialProvider);
+    }
+  }, [initialProvider]);
+
+  const loadAll = async (notifyParent = false) => {
     const [cat, h, v] = await Promise.all([
       apiFetch<any>("/api/models/catalog"),
       apiFetch<any>("/api/settings/setup-hub"),
@@ -1982,11 +2017,47 @@ function SettingsSubPanel({
     setVoicePersona(v?.default_persona || "advisor_ja");
     setElevenVoiceId(v?.elevenlabs_voice_id || "JBFqnCBsd6RMkjVDRZzb");
     setFishVoiceId(v?.fish_voice_id || "");
+    if (notifyParent) {
+      onModelsChanged?.(cat);
+    }
+    return cat;
   };
 
   useEffect(() => {
     loadAll().catch(() => {});
   }, []);
+
+  const disconnectProvider = async (providerId: string, label: string) => {
+    try {
+      const res = await apiFetch<{ ok: boolean; catalog: any }>("/api/oauth/disconnect", {
+        method: "POST",
+        body: JSON.stringify({ provider: providerId }),
+      });
+      if (res?.catalog) {
+        setCatalog(res.catalog);
+        onModelsChanged?.(res.catalog);
+      }
+      setStatus(`Disconnected ${label}. Active AI switched cleanly.`);
+      await loadAll(true);
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : `Failed to disconnect ${label}.`);
+    }
+  };
+
+  const testActiveAi = async () => {
+    setTestingAi(true);
+    setStatus("Testing active AI model connection…");
+    try {
+      const res = await apiFetch<{ ok: boolean; provider_used: string; reply: string }>("/api/settings/test-ai", {
+        method: "POST",
+      });
+      setStatus(res.ok ? `Connected (${res.provider_used}): ${res.reply}` : `[${res.provider_used}] ${res.reply}`);
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : "AI test failed.");
+    } finally {
+      setTestingAi(false);
+    }
+  };
 
   // Poll ChatGPT Codex device-code login automatically
   useEffect(() => {
@@ -1997,7 +2068,7 @@ function SettingsSubPanel({
         if (res.status === "connected") {
           setCodexFlow({ ...codexFlow, status: "connected" });
           setStatus("ChatGPT / Codex Subscription connected!");
-          loadAll();
+          await loadAll(true);
         } else if (res.status === "error" || res.status === "expired") {
           setCodexFlow({ ...codexFlow, status: res.status });
           setStatus(res.error || "Sign-in expired. Try again.");
@@ -2038,7 +2109,8 @@ function SettingsSubPanel({
       setAgyFlow(null);
       setAgyCodeInput("");
       setStatus("Antigravity Google account connected!");
-      loadAll();
+      if (res.catalog) onModelsChanged?.(res.catalog);
+      await loadAll(true);
     } else {
       setStatus(res.error || "Token exchange failed.");
     }
@@ -2081,6 +2153,47 @@ function SettingsSubPanel({
 
   return (
     <div className="space-y-3.5">
+      {/* ACTIVE AI MODEL SUMMARY + QUICK CONTROLS */}
+      {catalog && (
+        <div className="p-2.5 rounded-xl bg-white/[0.04] border border-[#e5b84b]/25 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Active AI Model</div>
+            <div className="text-slate-100 font-semibold truncate">
+              {catalog.active_provider === "auto"
+                ? "★ Auto · Best Flagship"
+                : `${catalog.active_provider} · ${catalog.active_model}`}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {catalog.active_provider !== "auto" && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const updated = await apiFetch<any>("/api/models/select", {
+                    method: "POST",
+                    body: JSON.stringify({ provider: "auto", model: "auto-flagship" }),
+                  });
+                  setCatalog(updated);
+                  onModelsChanged?.(updated);
+                  setStatus("Switched to ★ Auto · Best Flagship.");
+                }}
+                className="g-btn-ghost px-2.5 py-1 text-[11px] text-amber-300"
+              >
+                Use Auto
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={testingAi}
+              onClick={testActiveAi}
+              className="g-btn-ghost px-2.5 py-1 text-[11px] text-emerald-300 disabled:opacity-50"
+            >
+              {testingAi ? "Testing…" : "Test AI"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {status && (
         <div className="p-2.5 rounded-xl bg-blue-500/15 border border-blue-400/30 text-xs text-blue-200">{status}</div>
       )}
@@ -2095,7 +2208,16 @@ function SettingsSubPanel({
             </span>
           </div>
           {subItems.find((i: any) => i.provider === "openai-codex")?.connected ? (
-            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+              <button
+                type="button"
+                onClick={() => disconnectProvider("openai-codex", "ChatGPT / Codex")}
+                className="px-2 py-0.5 rounded-md bg-white/5 hover:bg-red-500/20 text-[11px] text-slate-300 hover:text-red-300 transition"
+              >
+                Disconnect
+              </button>
+            </div>
           ) : (
             <button
               onClick={async () => {
@@ -2243,10 +2365,12 @@ function SettingsSubPanel({
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-bold text-white">4. Other OAuth Subscriptions (Claude &amp; Antigravity)</span>
           <button
+            type="button"
             onClick={async () => {
-              const r = await apiFetch<{ count: number; imported: string[] }>("/api/oauth/import-local", { method: "POST" });
+              const r = await apiFetch<{ count: number; imported: string[]; catalog?: any }>("/api/oauth/import-local", { method: "POST" });
               setStatus(r.count ? `Auto-imported local sign-in(s): ${r.imported.join(", ")}` : "No local CLI tokens found on this PC.");
-              loadAll();
+              if (r.catalog) onModelsChanged?.(r.catalog);
+              await loadAll(true);
             }}
             className="text-[11px] text-blue-400 hover:underline"
           >
@@ -2262,9 +2386,18 @@ function SettingsSubPanel({
               <div className="text-[11px] text-slate-400">Connect via Claude Code sign-in or `claude setup-token`</div>
             </div>
             {subItems.find((i: any) => i.provider === "claude-sub")?.connected ? (
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+                <button
+                  type="button"
+                  onClick={() => disconnectProvider("claude-sub", "Claude Pro / Max")}
+                  className="px-2 py-0.5 rounded-md bg-white/5 hover:bg-red-500/20 text-[11px] text-slate-300 hover:text-red-300 transition"
+                >
+                  Disconnect
+                </button>
+              </div>
             ) : (
-              <button onClick={() => setShowClaudeBox(!showClaudeBox)} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
+              <button type="button" onClick={() => setShowClaudeBox(!showClaudeBox)} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
                 Connect Claude
               </button>
             )}
@@ -2273,12 +2406,14 @@ function SettingsSubPanel({
             <div className="flex gap-2">
               <input className="g-input text-xs" type="password" placeholder="Paste Claude OAuth / setup-token..." value={claudeTok} onChange={(e) => setClaudeTok(e.target.value)} />
               <button
+                type="button"
                 onClick={async () => {
-                  await apiFetch("/api/oauth/claude-token", { method: "POST", body: JSON.stringify({ token: claudeTok }) });
+                  const res = await apiFetch<{ catalog?: any }>("/api/oauth/claude-token", { method: "POST", body: JSON.stringify({ token: claudeTok }) });
                   setClaudeTok("");
                   setShowClaudeBox(false);
                   setStatus("Claude subscription connected!");
-                  loadAll();
+                  if (res?.catalog) onModelsChanged?.(res.catalog);
+                  await loadAll(true);
                 }}
                 className="g-btn-primary px-3 text-xs shrink-0"
               >
@@ -2296,9 +2431,18 @@ function SettingsSubPanel({
               <div className="text-[11px] text-slate-400">Sign in with your Google Antigravity account or local `agy.exe`</div>
             </div>
             {subItems.find((i: any) => i.provider === "antigravity")?.connected ? (
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Connected</span>
+                <button
+                  type="button"
+                  onClick={() => disconnectProvider("antigravity", "Antigravity")}
+                  className="px-2 py-0.5 rounded-md bg-white/5 hover:bg-red-500/20 text-[11px] text-slate-300 hover:text-red-300 transition"
+                >
+                  Disconnect
+                </button>
+              </div>
             ) : (
-              <button onClick={startAntigravity} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
+              <button type="button" onClick={startAntigravity} className="g-btn-primary px-3 py-1.5 text-[11px] shrink-0">
                 Sign In with Google
               </button>
             )}
@@ -2310,7 +2454,7 @@ function SettingsSubPanel({
               </a>
               <div className="flex gap-2">
                 <input className="g-input text-xs" placeholder="2. Paste redirected URL or auth code here..." value={agyCodeInput} onChange={(e) => setAgyCodeInput(e.target.value)} />
-                <button onClick={finishAntigravity} className="g-btn-primary px-3 text-xs shrink-0">Link</button>
+                <button type="button" onClick={finishAntigravity} className="g-btn-primary px-3 text-xs shrink-0">Link</button>
               </div>
             </div>
           )}
@@ -2329,13 +2473,23 @@ function SettingsSubPanel({
               gemini: "gemini_api_key",
               xai_grok: "xai_api_key",
               openrouter: "openrouter_api_key",
+              qwen: "qwen_api_key",
+              minimax: "minimax_api_key",
             };
             if (keyField[apiProv]) body[keyField[apiProv]] = apiKeyVal.trim();
           }
-          await apiFetch("/api/settings/ai-provider", { method: "POST", body: JSON.stringify(body) });
+          const res = await apiFetch<{ saved: boolean; catalog?: any }>("/api/settings/ai-provider", {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
           setApiKeyVal("");
-          setStatus("Saved encrypted provider key.");
-          loadAll();
+          setStatus(
+            res?.catalog
+              ? `Saved & switched active AI to ${res.catalog.active_provider} · ${res.catalog.active_model}!`
+              : "Saved encrypted provider settings."
+          );
+          if (res?.catalog) onModelsChanged?.(res.catalog);
+          await loadAll(true);
         }}
         className="g-card p-3.5 space-y-2.5"
       >
@@ -2347,8 +2501,9 @@ function SettingsSubPanel({
             onClick={async () => {
               setRefreshingModels(true);
               try {
-                await apiFetch("/api/models/refresh", { method: "POST" });
-                await loadAll();
+                const refreshed = await apiFetch<any>("/api/models/refresh", { method: "POST" });
+                if (refreshed) onModelsChanged?.(refreshed);
+                await loadAll(true);
                 setStatus("Refreshed live flagship models from all connected providers!");
               } finally {
                 setRefreshingModels(false);
@@ -2362,19 +2517,32 @@ function SettingsSubPanel({
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-[145px_1fr_auto] gap-2">
           <select className="g-input text-xs" value={apiProv} onChange={(e) => setApiProv(e.target.value)}>
+            <option value="auto">★ Auto (Best Flagship)</option>
             <option value="gemini">Google Gemini</option>
-            <option value="antigravity">Antigravity</option>
-            <option value="openai-codex">ChatGPT / Codex</option>
             <option value="openai">OpenAI API</option>
             <option value="anthropic">Anthropic API</option>
+            <option value="openai-codex">ChatGPT / Codex</option>
+            <option value="antigravity">Antigravity</option>
             <option value="xai_grok">xAI Grok</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="qwen">Qwen (DashScope)</option>
+            <option value="minimax">MiniMax</option>
             <option value="ollama">Local Ollama</option>
           </select>
           {apiProv === "ollama" ? (
             <input className="g-input text-xs min-w-0" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" />
           ) : (
-            <input className="g-input text-xs min-w-0" type="password" value={apiKeyVal} onChange={(e) => setApiKeyVal(e.target.value)} placeholder="Paste encrypted API key (or leave blank)..." />
+            <input
+              className="g-input text-xs min-w-0"
+              type="password"
+              value={apiKeyVal}
+              onChange={(e) => setApiKeyVal(e.target.value)}
+              placeholder={
+                apiProv === "auto"
+                  ? "Click Save to switch active provider to Auto..."
+                  : "Paste encrypted API key (or leave blank to activate)..."
+              }
+            />
           )}
           <button type="submit" className="g-btn-primary px-3.5 text-xs shrink-0">Save</button>
         </div>
@@ -2389,13 +2557,15 @@ function SettingsSubPanel({
             type="button"
             disabled={!customModelId.trim()}
             onClick={async () => {
-              await apiFetch("/api/models/select", {
+              const targetProv = apiProv === "auto" ? "gemini" : apiProv;
+              const selected = await apiFetch<any>("/api/models/select", {
                 method: "POST",
-                body: JSON.stringify({ provider: apiProv, model: customModelId.trim() }),
+                body: JSON.stringify({ provider: targetProv, model: customModelId.trim() }),
               });
-              setStatus(`Activated custom model ${apiProv} · ${customModelId.trim()}!`);
+              setStatus(`Activated custom model ${targetProv} · ${customModelId.trim()}!`);
               setCustomModelId("");
-              loadAll();
+              if (selected) onModelsChanged?.(selected);
+              await loadAll(true);
             }}
             className="g-btn-ghost px-3 py-1.5 text-[11px] text-[#e5b84b] shrink-0 disabled:opacity-40"
           >

@@ -354,11 +354,24 @@ def _build_gemini_contents(history: list[dict[str, str]], user_prompt: str) -> l
     return contents
 
 
-def _get_antigravity_oauth_token(db: Session) -> str:
+_AUTO_MODEL_PLACEHOLDERS = ("", "auto", "auto-flagship", "consular-auto")
+_AGY_EFFORT_SUFFIX_RE = re.compile(r"-(?:xhigh|high|medium|low)$", re.I)
+
+
+def is_antigravity_disabled(db: Session) -> bool:
+    """Return True when the user explicitly disconnected Antigravity so disk files don't re-enable it."""
+    return get_setting(db, "antigravity_disabled", "").strip().lower() in ("1", "true", "yes")
+
+
+def _get_antigravity_oauth_token(db: Session, allow_disk_fallback: bool = True) -> str:
     """Read Antigravity OAuth token from encrypted DB or local ~/.gemini/antigravity-cli token file."""
+    if is_antigravity_disabled(db):
+        return ""
     tok = get_setting(db, "antigravity_access_token", "").strip()
     if tok:
         return tok
+    if not allow_disk_fallback:
+        return ""
     tok_path = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
     if tok_path.is_file():
         try:
@@ -402,6 +415,7 @@ def load_conversation_history(
 
 def detect_available_providers(db: Session) -> dict[str, Any]:
     agy_bin = find_antigravity_bin()
+    agy_disabled = is_antigravity_disabled(db)
     claude_cli = shutil.which("claude")
     codex_cli = shutil.which("codex")
     ollama_url = get_setting(db, "ollama_base_url", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
@@ -418,9 +432,14 @@ def detect_available_providers(db: Session) -> dict[str, Any]:
 
     return {
         "active_provider": get_setting(db, "ai_provider", "auto"),
-        "active_model": get_setting(db, "ai_model", "gpt-4o-mini"),
+        "active_model": get_setting(db, "ai_model", "auto-flagship"),
         "subscriptions": {
-            "antigravity_agy": {"installed": bool(agy_bin), "binary": agy_bin or "", "models": ["gemini-3.8-flash-medium", "claude-sonnet-5-5-medium", "gemini-4-argon-high"]},
+            "antigravity_agy": {
+                "installed": bool(agy_bin),
+                "enabled": not agy_disabled,
+                "binary": agy_bin or "",
+                "models": ["gemini-4-neon-high", "gemini-3.8-flash-medium", "claude-sonnet-5-5-medium", "gemini-4-argon-high"],
+            },
             "claude_cli": {"installed": bool(claude_cli), "binary": claude_cli or ""},
             "codex_chatgpt_cli": {"installed": bool(codex_cli), "binary": codex_cli or ""},
         },
@@ -431,6 +450,8 @@ def detect_available_providers(db: Session) -> dict[str, Any]:
             "gemini": bool(get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", ""))),
             "xai_grok": bool(get_setting(db, "xai_api_key", os.getenv("XAI_API_KEY", ""))),
             "openrouter": bool(get_setting(db, "openrouter_api_key", os.getenv("OPENROUTER_API_KEY", ""))),
+            "qwen": bool(get_setting(db, "qwen_api_key", os.getenv("QWEN_API_KEY", ""))),
+            "minimax": bool(get_setting(db, "minimax_api_key", os.getenv("MINIMAX_API_KEY", ""))),
         },
     }
 
@@ -459,7 +480,17 @@ def call_llm_detailed(
                 refreshed = _refresh_codex_access_token(db)
                 if refreshed:
                     codex_tok = refreshed
-            codex_model = model if model and ("gpt-" in model or model.startswith("o")) else "gpt-5.3-codex"
+            codex_model = (
+                model
+                if (
+                    provider == "openai-codex"
+                    and model not in _AUTO_MODEL_PLACEHOLDERS
+                    and "/" not in model
+                    and not model.lower().startswith("gpt-oss")
+                    and ("gpt-" in model.lower() or model.lower().startswith("o"))
+                )
+                else "gpt-5.3-codex"
+            )
             txt, status, err = _call_openai_codex_sse(codex_tok, codex_model, system_prompt, clean_history, user_prompt)
             if not txt and status == 401:
                 refreshed = _refresh_codex_access_token(db)
@@ -483,7 +514,11 @@ def call_llm_detailed(
         claude_tok = get_setting(db, "claude_oauth_token", os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")).strip()
         if claude_tok:
             configured_providers.append("claude-sub")
-            c_model = model if model.startswith("claude") else "claude-sonnet-4-5"
+            c_model = (
+                model
+                if (provider == "claude-sub" and model.startswith("claude") and not _AGY_EFFORT_SUFFIX_RE.search(model))
+                else "claude-sonnet-4-5"
+            )
             try:
                 with httpx.Client(timeout=40.0) as client:
                     r = client.post(
@@ -522,99 +557,12 @@ def call_llm_detailed(
                 "configured_providers": [],
             }
 
-    # 3. Antigravity CLI (Windows agy.exe/agy.cmd + Unix) or Google OAuth Token Endpoint
-    # Note: In `auto` mode, only invoke local `agy.exe` CLI if explicitly selected or OAuth token saved
-    # (prevents slow 20s CLI spawns ahead of fast HTTP API keys and keeps pytest hermetic).
-    agy_tok = _get_antigravity_oauth_token(db)
-    agy_bin = find_antigravity_bin()
-    if provider == "antigravity" or (provider == "auto" and bool(agy_tok)):
-        if agy_bin or agy_tok:
-            configured_providers.append("antigravity")
-        agy_errors: list[str] = []
-
-        # 3a. Try local Antigravity CLI (`agy.exe` / `agy.cmd` / `agy`)
-        if agy_bin:
-            agy_model = (
-                model
-                if (model and model not in ("auto-flagship", "consular-auto") and any(k in model for k in ("gemini-", "claude-", "gpt-oss", "orchestrator")))
-                else "gemini-4-neon-medium"
-            )
-            history_block = ""
-            if clean_history:
-                transcript = "\n".join(
-                    f"{'User' if t['role'] == 'user' else 'Assistant'}: {t['content']}"
-                    for t in clean_history
-                )
-                history_block = f"\n\nConversation History:\n{transcript}"
-            full_prompt = f"{system_prompt}{history_block}\n\nUser: {user_prompt}"
-            cmd = [
-                agy_bin,
-                "-p",
-                full_prompt,
-                "--output-format",
-                "text",
-                "--disable-slash-commands",
-                "--print-timeout",
-                "60s",
-                "--model",
-                agy_model,
-            ]
-            run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": 70, "encoding": "utf-8", "errors": "replace"}
-            if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
-                run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            try:
-                res = subprocess.run(cmd, **run_kwargs)
-                stdout_txt = (res.stdout or "").strip()
-                stderr_txt = (res.stderr or "").strip()
-                if res.returncode == 0 and stdout_txt and "AGY_ERROR:" not in stdout_txt:
-                    return {"text": stdout_txt, "provider": f"antigravity:{agy_model}", "error": None, "configured_providers": configured_providers}
-                err_msg = _extract_error_detail(stderr_txt or stdout_txt or f"Exit code {res.returncode}")
-                agy_errors.append(f"Antigravity CLI ({agy_model}) [exit {res.returncode}]: {err_msg}")
-            except Exception as exc:
-                agy_errors.append(f"Antigravity CLI ({agy_model}) [Execution Error]: {str(exc)[:300]}")
-
-        # 3b. Fallback: call Google Generative Language endpoint with stored Antigravity OAuth Bearer token
-        if agy_tok:
-            gem_model = model.replace("gemini/", "") if (model and model.startswith("gemini-")) else "gemini-3.1-flash-lite"
-            try:
-                with httpx.Client(timeout=35.0) as client:
-                    r = client.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/{gem_model}:generateContent",
-                        headers={"Authorization": f"Bearer {agy_tok}", "Content-Type": "application/json"},
-                        json={
-                            "systemInstruction": {"parts": [{"text": system_prompt}]},
-                            "contents": _build_gemini_contents(clean_history, user_prompt),
-                        },
-                    )
-                    if r.status_code == 200:
-                        cands = r.json().get("candidates", [])
-                        if cands:
-                            txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", [])).strip()
-                            if txt:
-                                return {"text": txt, "provider": f"antigravity-oauth:{gem_model}", "error": None, "configured_providers": configured_providers}
-                        agy_errors.append(f"Antigravity OAuth ({gem_model}) [HTTP 200]: Empty response candidates.")
-                    else:
-                        agy_errors.append(f"Antigravity OAuth ({gem_model}) [HTTP {r.status_code}]: {_extract_error_detail(r.text)}")
-            except Exception as exc:
-                agy_errors.append(f"Antigravity OAuth ({gem_model}) [Connection Error]: {str(exc)[:300]}")
-
-        if agy_errors:
-            last_failed_provider = "antigravity"
-            errors.extend(agy_errors)
-        elif provider == "antigravity":
-            return {
-                "text": None,
-                "provider": "antigravity:unconfigured",
-                "error": "Antigravity is selected, but neither `agy.exe`/`agy.cmd` nor a Google OAuth token was found on this PC.",
-                "configured_providers": [],
-            }
-
-    # 4. Local Ollama
+    # 3. Local Ollama
     if provider in ("ollama", "auto"):
         ollama_url = get_setting(db, "ollama_base_url", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
-        ollama_model = (model if (provider == "ollama" and model and model != "consular-auto") else "") or get_setting(
-            db, "ollama_model", os.getenv("OLLAMA_MODEL", "llama3.2")
-        )
+        ollama_model = (
+            model if (provider == "ollama" and model not in _AUTO_MODEL_PLACEHOLDERS) else ""
+        ) or get_setting(db, "ollama_model", os.getenv("OLLAMA_MODEL", "llama3.2"))
         ollama_messages = [{"role": "system", "content": system_prompt}, *clean_history, {"role": "user", "content": user_prompt}]
         try:
             timeout_s = 30.0 if provider == "ollama" else 2.5
@@ -640,7 +588,7 @@ def call_llm_detailed(
                 last_failed_provider = "ollama"
                 errors.append(f"Ollama ({ollama_url}) [Unreachable]: {str(exc)[:300]}")
 
-    # 5. Cloud API Keys (OpenAI, xAI Grok, OpenRouter, Qwen, MiniMax)
+    # 4. Cloud API Keys (OpenAI, xAI Grok, OpenRouter, Qwen, MiniMax)
     openai_compat = [
         ("openai", "openai_api_key", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
         ("xai_grok", "xai_api_key", "XAI_API_KEY", "https://api.x.ai/v1/chat/completions", "grok-2-latest"),
@@ -648,6 +596,12 @@ def call_llm_detailed(
         ("qwen", "qwen_api_key", "QWEN_API_KEY", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen-plus"),
         ("minimax", "minimax_api_key", "MINIMAX_API_KEY", "https://api.minimaxi.chat/v1/text/chatcompletion_v2", "MiniMax-Text-01"),
     ]
+    _foreign_prefixes: dict[str, tuple[str, ...]] = {
+        "openai": ("gemini-", "claude-", "grok-", "qwen", "minimax"),
+        "xai_grok": ("gemini-", "claude-", "gpt-", "qwen", "minimax"),
+        "qwen": ("gemini-", "claude-", "gpt-", "grok-", "minimax"),
+        "minimax": ("gemini-", "claude-", "gpt-", "grok-", "qwen"),
+    }
     for prov_id, setting_key, env_key, endpoint, fallback_model in openai_compat:
         if provider not in ("auto", prov_id):
             continue
@@ -662,7 +616,11 @@ def call_llm_detailed(
                 }
             continue
         configured_providers.append(prov_id)
-        use_model = model if (provider == prov_id and model and model != "consular-auto") else fallback_model
+        if provider == prov_id and model not in _AUTO_MODEL_PLACEHOLDERS:
+            bad_pref = _foreign_prefixes.get(prov_id, ())
+            use_model = fallback_model if (bad_pref and model.lower().startswith(bad_pref)) else model
+        else:
+            use_model = fallback_model
         msgs = [{"role": "system", "content": system_prompt}, *clean_history, {"role": "user", "content": user_prompt}]
         try:
             with httpx.Client(timeout=35.0) as client:
@@ -684,12 +642,16 @@ def call_llm_detailed(
             last_failed_provider = prov_id
             errors.append(f"{prov_id} ({use_model}) [Connection Error]: {str(exc)[:300]}")
 
-    # 6. Anthropic Claude API Key
+    # 5. Anthropic Claude API Key
     if provider in ("auto", "anthropic"):
         anth_key = get_setting(db, "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")).strip()
         if anth_key:
             configured_providers.append("anthropic")
-            anth_model = model if model.startswith("claude") else "claude-3-5-sonnet-latest"
+            anth_model = (
+                model
+                if (provider == "anthropic" and model.startswith("claude") and not _AGY_EFFORT_SUFFIX_RE.search(model))
+                else "claude-3-5-sonnet-latest"
+            )
             try:
                 with httpx.Client(timeout=35.0) as client:
                     r = client.post(
@@ -727,19 +689,22 @@ def call_llm_detailed(
                 "configured_providers": [],
             }
 
-    # 7. Google Gemini API Key (with automatic 503/429 high-demand retry & flagship backup failover)
+    # 6. Google Gemini API Key (with automatic 503/429 high-demand retry & flagship backup failover)
     if provider in ("auto", "gemini"):
         gem_key = get_setting(db, "gemini_api_key", os.getenv("GEMINI_API_KEY", "")).strip()
         if gem_key:
             configured_providers.append("gemini")
+            cleaned_model = _AGY_EFFORT_SUFFIX_RE.sub("", model.replace("gemini/", ""))
             gem_model = (
-                model.replace("gemini/", "")
-                if (model and model not in ("auto-flagship", "consular-auto") and ("gemini" in model or "antigravity" in model))
+                cleaned_model
+                if (
+                    provider == "gemini"
+                    and cleaned_model not in _AUTO_MODEL_PLACEHOLDERS
+                    and ("gemini" in cleaned_model.lower() or "antigravity" in cleaned_model.lower())
+                )
                 else "gemini-4-neon"
             )
-            if gem_model in ("gemini-2.0-flash", "gemini-2.5-flash"):
-                gem_model = "gemini-4-neon"
-            # Build ordered candidate list: requested model first, then resilient flagship & fast fallbacks on 503/429
+            # Build ordered candidate list: requested model first, then resilient flagship & fast fallbacks on 503/429/404
             candidates: list[str] = []
             for m_cand in (gem_model, "gemini-4-neon", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"):
                 if m_cand not in candidates:
@@ -786,6 +751,100 @@ def call_llm_detailed(
                 "text": None,
                 "provider": "gemini:unconfigured",
                 "error": "Google Gemini API is selected, but no Gemini API key is configured. Add it in Settings.",
+                "configured_providers": [],
+            }
+
+    # 7. Antigravity CLI (Windows agy.exe/agy.cmd + Unix) or Google OAuth Token Endpoint
+    # Note: In `auto` mode, only invoke Antigravity as a fallback when explicitly linked in DB (never let ambient
+    # ~/.gemini/oauth_creds.json files hijack `auto` mode ahead of configured API keys or Ollama).
+    agy_disabled = is_antigravity_disabled(db)
+    db_agy_tok = "" if agy_disabled else get_setting(db, "antigravity_access_token", "").strip()
+    agy_tok = _get_antigravity_oauth_token(db, allow_disk_fallback=(provider == "antigravity"))
+    agy_bin = None if (agy_disabled and provider != "antigravity") else find_antigravity_bin()
+    if provider == "antigravity" or (provider == "auto" and bool(db_agy_tok)):
+        if agy_bin or agy_tok:
+            configured_providers.append("antigravity")
+        agy_errors: list[str] = []
+
+        # 7a. Try local Antigravity CLI (`agy.exe` / `agy.cmd` / `agy`)
+        if agy_bin:
+            agy_model = (
+                model
+                if (
+                    provider == "antigravity"
+                    and model not in _AUTO_MODEL_PLACEHOLDERS
+                    and any(k in model.lower() for k in ("gemini-", "claude-", "gpt-oss", "orchestrator"))
+                )
+                else "gemini-4-neon-medium"
+            )
+            history_block = ""
+            if clean_history:
+                transcript = "\n".join(
+                    f"{'User' if t['role'] == 'user' else 'Assistant'}: {t['content']}"
+                    for t in clean_history
+                )
+                history_block = f"\n\nConversation History:\n{transcript}"
+            full_prompt = f"{system_prompt}{history_block}\n\nUser: {user_prompt}"
+            cmd = [
+                agy_bin,
+                "-p",
+                full_prompt,
+                "--output-format",
+                "text",
+                "--disable-slash-commands",
+                "--print-timeout",
+                "60s",
+                "--model",
+                agy_model,
+            ]
+            run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": 70, "encoding": "utf-8", "errors": "replace"}
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            try:
+                res = subprocess.run(cmd, **run_kwargs)
+                stdout_txt = (res.stdout or "").strip()
+                stderr_txt = (res.stderr or "").strip()
+                if res.returncode == 0 and stdout_txt and "AGY_ERROR:" not in stdout_txt:
+                    return {"text": stdout_txt, "provider": f"antigravity:{agy_model}", "error": None, "configured_providers": configured_providers}
+                err_msg = _extract_error_detail(stderr_txt or stdout_txt or f"Exit code {res.returncode}")
+                agy_errors.append(f"Antigravity CLI ({agy_model}) [exit {res.returncode}]: {err_msg}")
+            except Exception as exc:
+                agy_errors.append(f"Antigravity CLI ({agy_model}) [Execution Error]: {str(exc)[:300]}")
+
+        # 7b. Fallback: call Google Generative Language endpoint with stored Antigravity OAuth Bearer token
+        if agy_tok:
+            cleaned_agy = _AGY_EFFORT_SUFFIX_RE.sub("", model.replace("gemini/", ""))
+            gem_model = cleaned_agy if (provider == "antigravity" and cleaned_agy.startswith("gemini-")) else "gemini-3.1-flash-lite"
+            try:
+                with httpx.Client(timeout=35.0) as client:
+                    r = client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{gem_model}:generateContent",
+                        headers={"Authorization": f"Bearer {agy_tok}", "Content-Type": "application/json"},
+                        json={
+                            "systemInstruction": {"parts": [{"text": system_prompt}]},
+                            "contents": _build_gemini_contents(clean_history, user_prompt),
+                        },
+                    )
+                    if r.status_code == 200:
+                        cands = r.json().get("candidates", [])
+                        if cands:
+                            txt = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", [])).strip()
+                            if txt:
+                                return {"text": txt, "provider": f"antigravity-oauth:{gem_model}", "error": None, "configured_providers": configured_providers}
+                        agy_errors.append(f"Antigravity OAuth ({gem_model}) [HTTP 200]: Empty response candidates.")
+                    else:
+                        agy_errors.append(f"Antigravity OAuth ({gem_model}) [HTTP {r.status_code}]: {_extract_error_detail(r.text)}")
+            except Exception as exc:
+                agy_errors.append(f"Antigravity OAuth ({gem_model}) [Connection Error]: {str(exc)[:300]}")
+
+        if agy_errors:
+            last_failed_provider = "antigravity"
+            errors.extend(agy_errors)
+        elif provider == "antigravity":
+            return {
+                "text": None,
+                "provider": "antigravity:unconfigured",
+                "error": "Antigravity is selected, but neither `agy.exe`/`agy.cmd` nor a Google OAuth token was found on this PC.",
                 "configured_providers": [],
             }
 
